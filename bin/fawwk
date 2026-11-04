@@ -5,7 +5,7 @@ set -Eeuo pipefail
 FAWWK_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export FAWWK_HOME
 
-for _lib in ui common git github env build proxy release notify setup create manage settings maint doctor; do
+for _lib in ui common git github env build proxy release notify setup create manage settings db maint doctor; do
   # shellcheck disable=SC1090
   source "$FAWWK_HOME/lib/$_lib.sh"
 done
@@ -70,11 +70,15 @@ usage() {
     c "domain <app> [list|add|rm]" "Domains and paths"
     c "port <app> [port]" "Port the app listens on"
     c "health <app> [path|off] [--timeout S]" "Health check path and timeout"
-    c "build <app> [method]" "auto, dockerfile, nixpacks or static"
+    c "build <app> [method]" "auto, dockerfile, railpack, nixpacks, static"
     c "buildenv <app> [all|none|KEYS]" "Env vars passed to the build"
     c "autodeploy <app> [on|off]" "Redeploy on every push"
     c "branch | folder | repo <app> [value]" "Change what gets deployed"
     c "access <app> [method]" "github, deploykey, token or public"
+
+    h "Databases"
+    c "db create <name> --type T [--link APP]" "Postgres, Redis or MongoDB, backed up daily"
+    c "db [list|info|link|shell|backup|restore]" "Manage them (fawwk db --help)"
 
     h "Data and jobs"
     c "volume <app> [list|add|rm] [path]" "Folders kept across deploys"
@@ -119,6 +123,7 @@ main() {
     volume | volumes) cmd_volume "$@" ;;
     release) cmd_release "$@" ;;
     cron) cmd_cron "$@" ;;
+    db | database | databases) cmd_db "$@" ;;
     cron-run) cmd_cron_run "$@" ;;
     notify) cmd_notify "$@" ;;
     cleanup | prune) cmd_cleanup "$@" ;;
