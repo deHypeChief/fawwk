@@ -14,10 +14,24 @@ proxy_ensure() {
       -v "$CADDY_DIR:/etc/caddy:ro" \
       -v fawwk_caddy_data:/data -v fawwk_caddy_config:/config \
       --log-opt max-size=10m --log-opt max-file=3 \
-      caddy:2 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+      "$CADDY_IMAGE" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
   elif ! proxy_running; then
     docker start "$FAWWK_PROXY" >/dev/null
   fi
+}
+
+# The image the running proxy was created from (e.g. caddy:2 on servers set up before pinning).
+proxy_image() { docker inspect -f '{{.Config.Image}}' "$FAWWK_PROXY" 2>/dev/null || true; }
+
+# Recreates the proxy on CADDY_IMAGE. Certificates live in a volume, so they're kept; sites are
+# unreachable for the few seconds the new container takes to start.
+proxy_upgrade() {
+  spin_start "Pulling $CADDY_IMAGE"
+  docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 || { spin_stop; die "Couldn't pull $CADDY_IMAGE"; }
+  spin_stop
+  docker rm -f "$FAWWK_PROXY" >/dev/null 2>&1 || true
+  proxy_ensure
+  proxy_reload
 }
 
 # Prints the full Caddyfile generated from every app's routes.

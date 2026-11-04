@@ -18,10 +18,15 @@ Options:
   --health <path>          Health check path, e.g. /health (default: any response)
   --env-file <file>        Load env vars from a .env file
   --token-file <file>      Private repo: file containing a personal access token
+  --token-user <user>      Username for the token (only Bitbucket needs it)
   --deploy-key             Private repo: use a generated SSH deploy key
   --github                 Use the connected GitHub App (see: fawwk github)
   --build <type>           auto | dockerfile | nixpacks | static (default: auto)
   --no-strip               Keep the path prefix when proxying (example.com/api → /api/...)
+  --volume <path>          Keep a folder across deploys, e.g. /app/data (repeatable)
+  --release "<command>"    Run before each release, e.g. "npm run migrate"
+  --memory <size>          Memory limit, e.g. 512m or 2g (default: none)
+  --cpus <n>               CPU limit, e.g. 1.5 (default: none)
   --auto / --no-auto       Auto-deploy on every push (default: on)
   --no-deploy              Save the app without deploying yet
   -y, --yes                Don't prompt; use flags and defaults
@@ -30,7 +35,7 @@ EOF
 
 cmd_create() {
   local name='' repo='' branch='' dir='' domains='' port='' health='' envfile='' token_file=''
-  local auth='' build=auto strip=yes auto='' do_deploy=1 has_health=0
+  local auth='' build=auto strip=yes auto='' do_deploy=1 has_health=0 token_user='' volumes='' release='' memory='' cpus=
   while (($#)); do
     case $1 in
       --repo) need_arg "$@"; repo=$2; shift 2 ;;
@@ -42,6 +47,12 @@ cmd_create() {
       --health) need_arg "$@"; health=$2; has_health=1; shift 2 ;;
       --env-file) need_arg "$@"; envfile=$2; shift 2 ;;
       --token-file) need_arg "$@"; token_file=$2; auth=token; shift 2 ;;
+      --token-user) need_arg "$@"; token_user=$2; shift 2 ;;
+      --volume) need_arg "$@"; [[ $2 =~ ^(/[A-Za-z0-9._-]+)+$ ]] || die "--volume needs an absolute path like /app/data"
+        volumes+="${volumes:+ }$2"; shift 2 ;;
+      --release) need_arg "$@"; release=$2; shift 2 ;;
+      --memory) need_arg "$@"; [[ ${2,,} =~ ^[0-9]+[mg]$ ]] || die "--memory must look like 512m or 2g"; memory=${2,,}; shift 2 ;;
+      --cpus) need_arg "$@"; [[ $2 =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "--cpus must be a number like 1.5"; cpus=$2; shift 2 ;;
       --deploy-key) auth=deploykey; shift ;;
       --github) auth=github; shift ;;
       --build) need_arg "$@"; build=$2; shift 2 ;;
@@ -75,13 +86,14 @@ cmd_create() {
   A_CREATED=$(ts)
   A_STATE=new
   A_STRIP=$strip
+  A_VOLUMES=$volumes A_RELEASE=$release A_MEMORY=$memory A_CPUS=$cpus
   # Leftovers from an earlier create that was aborted.
   rm -rf "$(app_dir "$name")" "$(app_var "$name")"
   mkdir -p "$(app_dir "$name")" "$(app_var "$name")/logs"
   chmod 700 "$(app_dir "$name")"
   trap 'create_abort' INT
 
-  git_setup_access "$auth" "$token_file"
+  git_setup_access "$auth" "$token_file" "$token_user"
 
   local def_branch
   def_branch=$(git_default_branch || true)
@@ -212,7 +224,7 @@ create_suggest_dir() {
   build_dockerfile "$src" >/dev/null && return 0
   [[ -f $src/package.json || -f $src/index.html ]] && return 0
   found=$(cd "$src" && find . -mindepth 2 -maxdepth 3 \( -iname Dockerfile -o -name package.json \) \
-    -not -path '*/node_modules/*' 2>/dev/null | xargs -r -n1 dirname | sed 's#^\./##' | sort -u | head -n 8 | tr '\n' ' ' || true)
+    -not -path '*/node_modules/*' -print0 2>/dev/null | xargs -0 -r -n1 dirname | sed 's#^\./##' | sort -u | head -n 8 | tr '\n' ' ' || true)
   [[ -n $found ]] && info "Nothing to build at the repo root. Candidate folders: ${C_ACCENT2}$found${C_RESET}"
   return 0
 }
@@ -231,6 +243,9 @@ create_summary() {
     l+=("$(kv "Health check" "${A_HEALTH:-any HTTP response}")")
   fi
   l+=("$(kv "Env vars" "$(env_count "$(app_envfile "$A_NAME")")")")
+  [[ -n $A_VOLUMES ]] && l+=("$(kv Volumes "$A_VOLUMES")")
+  [[ -n $A_RELEASE ]] && l+=("$(kv Release "$A_RELEASE")")
+  [[ -n $A_MEMORY$A_CPUS ]] && l+=("$(kv Limits "memory ${A_MEMORY:-unlimited}, cpus ${A_CPUS:-unlimited}")")
   l+=("$(kv Auto-deploy "$A_AUTO")")
   printf '\n' >&2
   ui_box --title "Summary" "${l[@]}"

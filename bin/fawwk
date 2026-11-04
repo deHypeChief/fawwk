@@ -5,7 +5,7 @@ set -Eeuo pipefail
 FAWWK_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export FAWWK_HOME
 
-for _lib in ui common git github env build proxy release setup create manage doctor; do
+for _lib in ui common git github env build proxy release notify setup create manage settings maint doctor; do
   # shellcheck disable=SC1090
   source "$FAWWK_HOME/lib/$_lib.sh"
 done
@@ -14,7 +14,8 @@ unset _lib
 trap ui_on_int INT
 
 # Never stop silently: remember the last failing command and report it if it ends the run.
-trap '_fw_line=$LINENO _fw_src=${BASH_SOURCE[0]##*/} _fw_cmd=$BASH_COMMAND' ERR
+# A function that deliberately returns non-zero (usage shown, "No" at a confirm) isn't a crash.
+trap '[[ $BASH_COMMAND == return* ]] || _fw_line=$LINENO _fw_src=${BASH_SOURCE[0]##*/} _fw_cmd=$BASH_COMMAND' ERR
 trap '_fw_rc=$?
   spin_stop; ui_cursor_show
   if ((_fw_rc != 0 && _fw_rc != 130)) && [[ ${FAWWK_DIED:-0} != 1 && -n ${_fw_cmd-} ]]; then
@@ -28,7 +29,7 @@ usage() {
   [[ -r $FAWWK_CONF ]] && source "$FAWWK_CONF" 2>/dev/null
   ui_banner
   local A=$C_ACCENT R=$C_RESET M=$C_MUTED B=$C_BOLD
-  c() { printf '  %s%-34s%s %s\n' "$A" "$1" "$R" "$2"; }
+  c() { printf '  %s%-38s%s %s\n' "$A" "$1" "$R" "$2"; }
   h() { printf '\n %s%s%s\n' "$B" "$1" "$R"; }
   {
     h "Getting started"
@@ -39,8 +40,13 @@ usage() {
     h "Server"
     c "setup" "Prepare this server (safe to re-run)"
     c "doctor" "Check the server, DNS and every app"
-    c "proxy [status|reload|logs|config]" "The HTTPS proxy (Caddy)"
+    c "proxy [status|reload|logs|config|upgrade]" "The HTTPS proxy (Caddy)"
+    c "notify [url [--all]|test|off]" "Get told when an automated deploy fails"
+    c "cleanup" "Free disk space (keeps rollback images)"
+    c "backup [file] [--with-data]" "Save settings, apps, secrets, certificates"
+    c "restore <file>" "Rebuild a backup on this server"
     c "update" "Update Fawwk itself"
+    c "uninstall" "Remove Fawwk and its apps"
 
     h "GitHub"
     c "github" "Connected accounts and the repos they reach"
@@ -49,13 +55,13 @@ usage() {
 
     h "Apps"
     c "create [name]" "Connect a repo and deploy it (guided)"
-    c "deploy <app>" "Pull the latest commit and redeploy"
-    c "list" "All apps and their state"
-    c "info <app>" "Details for one app"
+    c "deploy <app> | --all" "Pull the latest commit and redeploy"
+    c "list [--json]" "All apps and their state"
+    c "info <app> [--json]" "Details for one app"
     c "logs <app> [-f] [-n N] [--build]" "App logs, or the last build log"
     c "restart | stop | start <app>" "Zero-downtime restart, stop, start"
     c "rollback <app> [deploy-id]" "Go back to an earlier version"
-    c "history <app>" "Recent deploys"
+    c "history <app> [--json]" "Recent deploys"
     c "exec <app> [command]" "Shell (or a command) inside the container"
     c "remove <app> [--yes]" "Delete an app"
 
@@ -63,9 +69,18 @@ usage() {
     c "env <app> [show|set|unset|...]" "Environment variables"
     c "domain <app> [list|add|rm]" "Domains and paths"
     c "port <app> [port]" "Port the app listens on"
-    c "health <app> [path|off]" "Health check path"
+    c "health <app> [path|off] [--timeout S]" "Health check path and timeout"
     c "build <app> [method]" "auto, dockerfile, nixpacks or static"
+    c "buildenv <app> [all|none|KEYS]" "Env vars passed to the build"
     c "autodeploy <app> [on|off]" "Redeploy on every push"
+    c "branch | folder | repo <app> [value]" "Change what gets deployed"
+    c "access <app> [method]" "github, deploykey, token or public"
+
+    h "Data and jobs"
+    c "volume <app> [list|add|rm] [path]" "Folders kept across deploys"
+    c "release <app> [command|off]" "Run e.g. migrations before each release"
+    c "cron <app> [list|add|rm|run]" "Scheduled commands in the container"
+    c "limits <app> [memory=512m] [cpus=1]" "Cap memory and CPU"
 
     printf '\n  %s%s fawwk <command> --help for details %s most commands need sudo%s\n\n' "$M" "$G_ARROW" "$G_SEP" "$R"
   } >&2
@@ -95,13 +110,29 @@ main() {
     health) cmd_health "$@" ;;
     autodeploy | auto) cmd_autodeploy "$@" ;;
     build) cmd_build "$@" ;;
+    buildenv | build-env) cmd_buildenv "$@" ;;
+    branch) cmd_branch "$@" ;;
+    folder | dir) cmd_folder "$@" ;;
+    repo) cmd_repo "$@" ;;
+    access) cmd_access "$@" ;;
+    limits | limit) cmd_limits "$@" ;;
+    volume | volumes) cmd_volume "$@" ;;
+    release) cmd_release "$@" ;;
+    cron) cmd_cron "$@" ;;
+    cron-run) cmd_cron_run "$@" ;;
+    notify) cmd_notify "$@" ;;
+    cleanup | prune) cmd_cleanup "$@" ;;
+    backup) cmd_backup "$@" ;;
+    restore) cmd_restore "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    post-update) cmd_post_update "$@" ;;
     github | gh) cmd_github "$@" ;;
     hooks-run) cmd_hooks_run "$@" ;;
     sync) cmd_sync "$@" ;;
     proxy) cmd_proxy "$@" ;;
     doctor | check) cmd_doctor "$@" ;;
     update | self-update) cmd_update "$@" ;;
-    version | -v | --version) echo "$FAWWK_VERSION" ;;
+    version | -v | --version) fawwk_version; echo ;;
     help | -h | --help) usage 2>&1 ;;
     *) err "Unknown command: $cmd"; hint "See all commands with: fawwk help"; exit 1 ;;
   esac
