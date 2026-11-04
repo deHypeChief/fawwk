@@ -187,12 +187,17 @@ Each one checks the change works before saving it, then offers to redeploy.
 fawwk db create shop --type postgres --link api    # also: --type redis, --type mongodb
 fawwk db                                           # all databases, state, last backup, apps using them
 fawwk db info shop                                 # details; the URL with --reveal
+fawwk db url shop                                  # print the connection URL (for scripts)
 fawwk db link shop worker                          # give another app the URL (DATABASE_URL)
+fawwk db unlink shop worker                        # take it away again
 fawwk db shell shop                                # psql / redis-cli / mongosh
 fawwk db backup shop                               # back up now
+fawwk db backups shop                              # list its backups
 fawwk db restore shop latest                       # or a file from: fawwk db backups shop
 fawwk db schedule 02:30                            # daily backup time (default 03:17), or off
-fawwk db remove shop
+fawwk db start | stop | restart shop               # or --all
+fawwk db logs shop -f
+fawwk db remove shop                               # see "Deleting a database" below
 ```
 
 - Each database runs in its own container on the private Fawwk network, as `fawwk-db-<name>`, with a
@@ -211,6 +216,23 @@ fawwk db remove shop
 - `restore` replaces the database's contents with the backup's, exactly: data added after the backup is
   gone. A safety backup of the current data is taken first. Apps are disconnected for a moment.
 - Redis runs with its append-only file on, so a restart loses nothing.
+
+#### Deleting a database
+
+```bash
+fawwk db unlink shop api        # for each app using it (fawwk db lists them), then: fawwk restart api
+fawwk db remove shop            # asks you to type the name; --yes skips that
+```
+
+- `remove` deletes the container **and its data** (the `fawwk_db_<name>` volume). With `--keep-data`
+  it deletes only the container: the volume stays on disk, for you to copy files out of. Fawwk won't
+  reuse it, and `db create` refuses that name until it's gone (`docker volume rm fawwk_db_<name>`). To
+  bring a database back, create it again with the same name, then `fawwk db restore <name> latest`.
+- **Its backups are kept** in `/var/lib/fawwk/backups/<name>/`, in case you change your mind. When
+  you're sure: `sudo rm -rf /var/lib/fawwk/backups/<name>`
+- **Unlink apps first.** `remove` warns you which apps use the database but leaves their env alone, so
+  without `unlink` an app keeps a `DATABASE_URL` (or `REDIS_URL` / `MONGODB_URL`) pointing at a database
+  that's gone.
 
 ### Persistent data (volumes)
 
