@@ -3,7 +3,7 @@
 #
 # Each "source" is a private GitHub App owned by one GitHub account or organization, created in one
 # click with GitHub's manifest flow. Several sources = several GitHub profiles/orgs.
-#   /etc/fawwk/github/<slug>/app.conf      GH_APP_ID GH_SLUG GH_OWNER GH_HTML_URL
+#   /etc/fawwk/github/<slug>/app.conf      GH_APP_ID GH_SLUG GH_OWNER GH_OWNER_TYPE GH_HTML_URL
 #   /etc/fawwk/github/<slug>/key.pem       private key: signs short-lived JWTs (root only)
 #   /var/lib/fawwk/hooks/secrets/<slug>    webhook secret, mounted read-only into fawwk-hooks
 # Apps using a source store A_AUTH=github, A_GH_SOURCE=<slug>, A_GH_INSTALL=<installation id>.
@@ -14,7 +14,7 @@ HOOKS_CONTAINER="fawwk-hooks"
 HOOKS_IMAGE="python:3.12-alpine"
 HOOKS_UID=65534   # "nobody": the receiver never runs as root, even inside its container
 HOOKS_REV=2       # bump when hooks_container_start's run options change; older containers get recreated
-GH_API="https://api.github.com"
+GH_API="${FAWWK_GH_API:-https://api.github.com}"
 
 gh_sources() {
   local f
@@ -28,7 +28,7 @@ gh_have_sources() { [[ -n $(gh_sources) ]]; }
 
 gh_load() {
   [[ -f $GH_ETC/$1/app.conf ]] || die "No GitHub connection named '$1'. See: fawwk github"
-  GH_APP_ID='' GH_SLUG='' GH_OWNER='' GH_HTML_URL=''
+  GH_APP_ID='' GH_SLUG='' GH_OWNER='' GH_OWNER_TYPE='' GH_HTML_URL=''
   # shellcheck disable=SC1090
   source "$GH_ETC/$1/app.conf"
 }
@@ -97,6 +97,56 @@ gh_app_token() {
   exp=$(jq -r '.expires_at // empty' <<<"$resp")
   [[ -n $tok ]] || return 1
   (umask 077; printf '%s\n' "$tok" >"$d/token"; date -d "${exp:-now + 50 min}" +%s >"$d/token.exp")
+}
+
+# ---------- deploy status on commits ----------
+# Each deploy of an app using a GitHub App shows on its commit as a status named fawwk/<app>:
+# pending while it builds, then success (linking to the app) or failure. Needs the app's
+# "Commit statuses: Read and write" permission, which new connections ask for.
+
+# gh_settings_url SOURCE — the GitHub App's settings page, where its permissions are changed.
+gh_settings_url() {
+  gh_load "$1"
+  if [[ $GH_OWNER_TYPE == Organization ]]; then printf 'https://github.com/organizations/%s/settings/apps/%s/permissions' "$GH_OWNER" "$GH_SLUG"
+  else printf 'https://github.com/settings/apps/%s/permissions' "$GH_SLUG"
+  fi
+}
+
+# deploy_status STATE DESCRIPTION COMMIT — STATE is pending, success or failure. Never fails a deploy:
+# a GitHub outage or a missing permission only costs the status.
+DEPLOY_STATUS_TOKEN='' DEPLOY_STATUS_HINTED=0
+deploy_status() {
+  local state=$1 desc=$2 sha=${3-} url='' body
+  [[ ${A_AUTH-} == github && -n $sha && ${GH_STATUSES:-on} != off && -n ${A_GH_INSTALL-} ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  if [[ -z $DEPLOY_STATUS_TOKEN ]]; then
+    # A token that can only write commit statuses, only on this repo.
+    DEPLOY_STATUS_TOKEN=$(gh_api "$(gh_jwt "$A_GH_SOURCE" 2>/dev/null)" POST "/app/installations/$A_GH_INSTALL/access_tokens" \
+      "{\"repositories\":[\"$(repo_slug "$A_REPO")\"],\"permissions\":{\"statuses\":\"write\"}}" 2>/dev/null | jq -r '.token // empty' 2>/dev/null || true)
+  fi
+  if [[ -z $DEPLOY_STATUS_TOKEN ]]; then
+    if ((DEPLOY_STATUS_HINTED == 0)); then
+      DEPLOY_STATUS_HINTED=1
+      hint "To see deploys as a check mark on each GitHub commit, give $A_GH_SOURCE \"Commit statuses: Read and write\" at"
+      hint "$(gh_settings_url "$A_GH_SOURCE"), then accept the change on its install. (Or: fawwk github statuses off)"
+    fi
+    return 0
+  fi
+  [[ -n ${A_ROUTES-} ]] && url=$(route_url "${A_ROUTES%% *}")
+  body=$(jq -nc --arg s "$state" --arg d "${desc:0:140}" --arg c "fawwk/$A_NAME" --arg u "$url" \
+    '{state: $s, description: $d, context: $c} + (if $u == "" then {} else {target_url: $u} end)')
+  gh_api "$DEPLOY_STATUS_TOKEN" POST "/repos/$(repo_path "$A_REPO")/statuses/$sha" "$body" >/dev/null 2>&1 || true
+}
+
+github_statuses() {
+  case ${1-} in
+    on | off)
+      conf_set "$FAWWK_CONF" GH_STATUSES "$1"
+      ok "Deploy status on GitHub commits: $1" ;;
+    '') info "Deploy status on GitHub commits: ${GH_STATUSES:-on}"
+        hint "New GitHub connections can post them. For one connected earlier, add \"Commit statuses: Read and write\" in its settings." ;;
+    *) die "Usage: fawwk github statuses [on|off]" ;;
+  esac
 }
 
 gh_install_url() { gh_load "$1"; printf 'https://github.com/apps/%s/installations/new' "$GH_SLUG"; }
@@ -235,6 +285,7 @@ Usage: sudo fawwk github [command]
   connect [--org ORG]  Connect a GitHub account (or an organization) with a one-click GitHub App
   install [name]       Link to pick which repos the app can access
   remove <name>        Forget a connection (then delete the app on GitHub)
+  statuses [on|off]    Show each deploy as a check mark or cross on its commit (default: on)
 
 Connect once per GitHub account or organization. Repos with the app installed need no deploy keys
 or tokens, and every push deploys right away through a webhook.
@@ -252,6 +303,7 @@ cmd_github() {
     connect | add) github_connect "$@" ;;
     install) github_install "${1-}" ;;
     remove | rm) github_remove "${1-}" ;;
+    statuses | status) github_statuses "${1-}" ;;
     *) github_usage; return 1 ;;
   esac
 }
@@ -312,7 +364,7 @@ github_connect() {
       hook_attributes: {url: ($base + "/hooks/github"), active: true},
       redirect_url: ($base + "/github/callback"),
       setup_url: ($base + "/github/installed"),
-      default_permissions: {contents: "read", metadata: "read"},
+      default_permissions: {contents: "read", metadata: "read", statuses: "write"},
       default_events: ["push"] }')
   if [[ -n $org ]]; then action="https://github.com/organizations/$org/settings/apps/new?state=$state"
   else action="https://github.com/settings/apps/new?state=$state"
@@ -355,6 +407,7 @@ EOF
   conf_set "$d/app.conf" GH_APP_ID "$(jq -r '.id' <<<"$resp")"
   conf_set "$d/app.conf" GH_SLUG "$slug"
   conf_set "$d/app.conf" GH_OWNER "$(jq -r '.owner.login' <<<"$resp")"
+  conf_set "$d/app.conf" GH_OWNER_TYPE "$(jq -r '.owner.type // "User"' <<<"$resp")"
   conf_set "$d/app.conf" GH_HTML_URL "$(jq -r '.html_url' <<<"$resp")"
   ok "Created GitHub App ${C_BOLD}$slug${C_RESET} for $(jq -r '.owner.login' <<<"$resp")"
 

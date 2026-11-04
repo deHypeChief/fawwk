@@ -21,7 +21,7 @@ Options:
   --token-user <user>      Username for the token (only Bitbucket needs it)
   --deploy-key             Private repo: use a generated SSH deploy key
   --github                 Use the connected GitHub App (see: fawwk github)
-  --build <type>           auto | dockerfile | nixpacks | static (default: auto)
+  --build <type>           auto | dockerfile | railpack | nixpacks | static (default: auto)
   --no-strip               Keep the path prefix when proxying (example.com/api → /api/...)
   --volume <path>          Keep a folder across deploys, e.g. /app/data (repeatable)
   --release "<command>"    Run before each release, e.g. "npm run migrate"
@@ -70,7 +70,7 @@ cmd_create() {
   require_setup
   [[ -z $envfile || -f $envfile ]] || die "Env file not found: $envfile"
   [[ -z $token_file || -f $token_file ]] || die "Token file not found: $token_file"
-  [[ $build =~ ^(auto|dockerfile|nixpacks|static)$ ]] || die "--build must be auto, dockerfile, nixpacks or static"
+  [[ $build =~ ^(auto|dockerfile|railpack|nixpacks|static)$ ]] || die "--build must be auto, dockerfile, railpack, nixpacks or static"
 
   ui_banner "New app ${G_SEP} answer a few questions, ctrl+c cancels anytime"
 
@@ -132,9 +132,9 @@ cmd_create() {
   ok "$(build_describe "$detected" "$ctx")"
   # Catch a Dockerfile that can't build (e.g. it COPYs a lock file that isn't committed) before deploying.
   [[ $detected == dockerfile ]] && { build_warn_dockerfile "$ctx" || true; }
-  if [[ $detected == nixpacks ]] && ! command -v nixpacks >/dev/null 2>&1; then
-    die "This repo has no Dockerfile and Nixpacks isn't installed. Re-run: sudo fawwk setup"
-  fi
+  local missing
+  missing=$(build_tool_missing "$detected")
+  [[ -z $missing ]] || die "$missing"
 
   # --- routing ----------------------------------------------------------
   step "Domains"

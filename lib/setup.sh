@@ -6,7 +6,7 @@ setup_usage() {
 Usage: sudo fawwk setup [options]
 
 Prepares a fresh Ubuntu server: Docker, Caddy (HTTPS proxy), firewall, fail2ban,
-Nixpacks, swap for small servers, and the auto-deploy timer.
+Railpack, swap for small servers, and the auto-deploy timer.
 
 Options:
   --domain <domain>     Main domain. Apps get <app>.<domain> by default
@@ -60,7 +60,10 @@ cmd_setup() {
   ok "Base packages"
 
   setup_docker
-  setup_nixpacks
+  spin_start "Installing Railpack $RAILPACK_VERSION (builds repos that have no Dockerfile)"
+  if setup_railpack; then spin_stop; ok "Railpack $(railpack_version) installed"
+  else spin_stop; warn "Railpack couldn't be installed. Repos without a Dockerfile won't build until it is (re-run setup)."
+  fi
   ((swap)) && setup_swap
   ((firewall)) && setup_firewall
   systemctl enable --now fail2ban >/dev/null 2>&1 && ok "fail2ban is protecting SSH" || warn "Couldn't start fail2ban"
@@ -147,19 +150,23 @@ EOF
   ok "Docker $(docker version -f '{{.Server.Version}}') installed"
 }
 
-setup_nixpacks() {
-  if command -v nixpacks >/dev/null 2>&1; then
-    ok "Nixpacks already installed"
-    return 0
+# setup_railpack — installs the pinned Railpack release to /usr/local/bin (no-op when it's there).
+# Nixpacks, the previous builder, is no longer installed on new servers; existing ones keep it.
+setup_railpack() {
+  [[ $(railpack_version) == "$RAILPACK_VERSION" ]] && return 0
+  local arch tmp url
+  case $(uname -m) in
+    x86_64 | amd64) arch=x86_64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) return 1 ;;
+  esac
+  url="https://github.com/railwayapp/railpack/releases/download/v$RAILPACK_VERSION/railpack-v$RAILPACK_VERSION-$arch-unknown-linux-musl.tar.gz"
+  tmp=$(mktemp -d)
+  if curl -fsSL --max-time 120 "$url" -o "$tmp/railpack.tgz" && tar -xzf "$tmp/railpack.tgz" -C "$tmp" railpack; then
+    install -m 755 "$tmp/railpack" /usr/local/bin/railpack
   fi
-  spin_start "Installing Nixpacks (builds repos that have no Dockerfile)"
-  if curl -fsSL https://nixpacks.com/install.sh | bash >/dev/null 2>&1 && command -v nixpacks >/dev/null 2>&1; then
-    spin_stop
-    ok "Nixpacks installed"
-  else
-    spin_stop
-    warn "Nixpacks couldn't be installed. Repos without a Dockerfile won't build until it is."
-  fi
+  rm -rf "$tmp"
+  [[ $(railpack_version) == "$RAILPACK_VERSION" ]]
 }
 
 setup_swap() {

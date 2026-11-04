@@ -15,9 +15,9 @@ PASS=0 FAIL=0 FAILED=()
 new_sandbox() {
   SB=$(mktemp -d)
   export FAWWK_ETC=$SB/etc FAWWK_VAR=$SB/var FAWWK_LOG=$SB/log FAWWK_CRON_DIR=$SB/cron.d FAWWK_HOME=$ROOT
-  export FAWWK_LOGROTATE_DIR=$SB/logrotate.d
+  export FAWWK_LOGROTATE_DIR=$SB/logrotate.d FAWWK_SYSTEMD_DIR=$SB/systemd
   export FAKE_DOCKER_ROOT=$SB/docker NO_COLOR=1
-  mkdir -p "$FAWWK_ETC/apps" "$FAWWK_VAR/apps" "$FAWWK_LOG" "$FAWWK_CRON_DIR" "$FAWWK_LOGROTATE_DIR" "$SB/bin" \
+  mkdir -p "$FAWWK_ETC/apps" "$FAWWK_VAR/apps" "$FAWWK_LOG" "$FAWWK_CRON_DIR" "$FAWWK_LOGROTATE_DIR" "$SB/systemd" "$SB/bin" \
     "$FAKE_DOCKER_ROOT/volumes"
   printf 'DOMAIN=example.com\nEMAIL=ops@example.com\nPANEL_SUB=panel\nPANEL_HOST=panel.example.com\nSERVER_IP=203.0.113.7\n' >"$FAWWK_ETC/fawwk.conf"
   # A docker stub: enough for the code paths under test, silent success for the rest.
@@ -38,7 +38,7 @@ EOF
 # Loads fawwk's libraries into the current (sub)shell, like bin/fawwk does.
 load_fawwk() {
   local l
-  for l in ui common git github env build proxy release notify setup create manage settings maint doctor; do
+  for l in ui common git github env build proxy release notify setup create manage settings db maint doctor; do
     # shellcheck disable=SC1090
     source "$ROOT/lib/$l.sh"
   done
@@ -174,9 +174,9 @@ test_build_detection() {
   load_fawwk
   local d=$SB/ctx
   mkdir -p "$d"
-  eq "$(build_detect "$d")" nixpacks
+  eq "$(build_detect "$d")" "$(build_auto_builder)"
   touch "$d/index.html"; eq "$(build_detect "$d")" static
-  touch "$d/package.json"; eq "$(build_detect "$d")" nixpacks
+  touch "$d/package.json"; eq "$(build_detect "$d")" "$(build_auto_builder)"
   printf 'FROM node:20\nEXPOSE 4000\n' >"$d/DOCKERFILE"
   eq "$(build_detect "$d")" dockerfile
   eq "$(build_dockerfile "$d")" "$d/DOCKERFILE"
@@ -515,6 +515,332 @@ test_doctor_counts_warnings() {
   UI_WARNINGS=0
   warn "one" 2>/dev/null; warn "two" 2>/dev/null
   eq "$UI_WARNINGS" 2
+}
+
+# A docker stub that records its arguments (docker.log) and, for each name in $SPY_ENV, the value it
+# received in its environment (spy-<NAME>), so tests can tell values passed by name from values on the
+# command line.
+spy_docker() {
+  cat >"$SB/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_DOCKER_ROOT/../docker.log"
+for n in ${SPY_ENV-}; do [[ -v $n ]] && printf '%s' "${!n}" >"$FAKE_DOCKER_ROOT/../spy-$n"; done
+case "$*" in
+  "buildx version"*) echo "github.com/docker/buildx v0.29.0" ;;
+  "info -f"*) echo "$FAKE_DOCKER_ROOT" ;;
+esac
+exit 0
+EOF
+  chmod +x "$SB/bin/docker"
+}
+
+PEM=$'-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nkqhkiG9w0BAQEFAASCBKcwggSjAgEAAo\n-----END PRIVATE KEY-----'
+
+test_env_multiline_parse() {
+  load_fawwk
+  local out
+  out=$(printf '%s\n' 'A=1' "KEY=\"${PEM%%$'\n'*}" "${PEM#*$'\n'}\" # the key" "SQ='first" "second'" 'B="quote \"inside\""' 'C=3' | env_parse 2>/dev/null)
+  eq "$(env_parsed_keys <<<"$out" | tr '\n' ' ')" 'A KEY SQ B C '
+  eq "$(grep '^@@ml KEY ' <<<"$out" | cut -d' ' -f3 | base64 -d)" "$PEM"
+  eq "$(grep '^@@ml SQ ' <<<"$out" | cut -d' ' -f3 | base64 -d)" $'first\nsecond'
+  has "$out" 'B=quote "inside"'
+  # An unclosed quote takes the rest, with a warning (not silently the first line, as before).
+  out=$(printf '%s\n' 'K="open' 'rest' | env_parse 2>&1)
+  has "$out" 'has no closing'
+}
+
+test_env_multiline_store_and_roundtrip() {
+  load_fawwk
+  add_app api A_ROUTES=api.example.com A_PORT=8000 A_STATE=new
+  local f d tmp
+  f=$(app_envfile api); d=$(env_ml_dir "$f")
+  tmp=$(mktemp)
+  { printf 'PLAIN=hello\n'; env_ml_line CERT "$PEM"$'\n'; printf "TRICKY=a #b\n"; } >"$tmp"
+  env_save api "$tmp"
+  eq "$(cat "$f")" $'PLAIN=hello\nTRICKY=a #b'
+  eq "$(cat "$d/CERT")" "$PEM"
+  [[ $(tail -c1 "$d/CERT" | od -An -c | tr -d ' ') == '\n' ]]   # trailing newline kept exactly
+  eq "$(stat -c %a "$d/CERT")" 600
+  env_has "$f" CERT
+  eq "$(env_count "$f")" 3
+  # Render → parse → save gives back exactly the same stores (what `env edit` relies on).
+  local before_single before_cert
+  before_single=$(cat "$f"); before_cert=$(base64 -w0 "$d/CERT")
+  env_render "$f" | env_parse >"$tmp"
+  : >"$f"; rm -rf "$d"
+  env_save api "$tmp"
+  eq "$(cat "$f")" "$before_single"
+  eq "$(base64 -w0 "$d/CERT")" "$before_cert"
+  # A key switching kinds keeps only its last value.
+  printf 'CERT=now-single\n' >"$tmp"; env_save api "$tmp"
+  [[ ! -e $d/CERT ]]; has "$(cat "$f")" 'CERT=now-single'
+  env_ml_line PLAIN $'two\nlines' >"$tmp"; env_save api "$tmp"
+  hasnt "$(cat "$f")" 'PLAIN='; eq "$(cat "$d/PLAIN")" $'two\nlines'
+  env_unset api PLAIN CERT
+  [[ ! -e $d/PLAIN ]]; hasnt "$(cat "$f")" CERT
+}
+
+test_env_command_multiline() {
+  load_fawwk
+  add_app api A_ROUTES=api.example.com A_PORT=8000 A_STATE=new
+  FAWWK_YES=1
+  printf '%s\n' "$PEM" >"$SB/key.pem"
+  cmd_env api set "KEY=$PEM" PLAIN=1 2>/dev/null
+  cmd_env api set-file FILEKEY "$SB/key.pem" 2>/dev/null
+  local d
+  d=$(env_ml_dir "$(app_envfile api)")
+  eq "$(cat "$d/KEY")" "$PEM"
+  eq "$(cat "$d/FILEKEY")" "$PEM"
+  local shown
+  shown=$(cmd_env api show 2>/dev/null)
+  has "$shown" 'KEY=---****'
+  has "$shown" '(multi-line, 4 lines)'
+  hasnt "$shown" 'MIIEvQ'
+  has "$(cmd_env api show --reveal 2>/dev/null)" 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC'
+}
+
+test_multiline_env_reaches_containers() {
+  load_fawwk
+  spy_docker
+  add_app api A_ROUTES=api.example.com A_PORT=8000 A_STATE=new
+  local tmp; tmp=$(mktemp)
+  { printf 'PLAIN=1\n'; env_ml_line CERT "$PEM"; } >"$tmp"
+  env_save api "$tmp"
+  app_load api
+  app_run_args
+  has " ${RUN_ARGS[*]} " " -e CERT "
+  SPY_ENV=CERT app_docker run "${RUN_ARGS[@]}" img
+  eq "$(cat "$SB/spy-CERT")" "$PEM"
+  hasnt "$(cat "$SB/docker.log")" 'BEGIN PRIVATE'   # never on the command line
+}
+
+test_build_env_passed_by_name() {
+  load_fawwk
+  spy_docker
+  mkdir -p "$FAWWK_VAR/apps/api/src"
+  printf 'FROM scratch\n' >"$FAWWK_VAR/apps/api/src/Dockerfile"
+  add_app api A_ROUTES=api.example.com A_PORT=8000 A_STATE=new A_DIR=. A_BUILD=auto
+  local tmp; tmp=$(mktemp)
+  { printf 'SECRET=s3cret-value\nOTHER=x\n'; env_ml_line CERT "$PEM"; } >"$tmp"
+  env_save api "$tmp"
+  app_load api
+  SPY_ENV="SECRET CERT" build_image t1 "$SB/build.log" 2>/dev/null
+  local log; log=$(cat "$SB/docker.log")
+  has "$log" "--build-arg SECRET --build-arg OTHER --build-arg CERT"
+  hasnt "$log" 's3cret-value'
+  eq "$(cat "$SB/spy-SECRET")" s3cret-value
+  eq "$(cat "$SB/spy-CERT")" "$PEM"
+  # buildenv limits what the build sees.
+  : >"$SB/docker.log"; rm -f "$SB"/spy-*
+  A_BUILD_ENV=OTHER
+  SPY_ENV="SECRET" build_image t2 "$SB/build.log" 2>/dev/null
+  hasnt "$(cat "$SB/docker.log")" SECRET
+  [[ ! -e $SB/spy-SECRET ]]
+}
+
+test_railpack_build() {
+  command -v railpack >/dev/null || { echo "skipped (railpack not installed)"; return 0; }
+  load_fawwk
+  spy_docker
+  local src=$FAWWK_VAR/apps/web/src
+  mkdir -p "$src"
+  printf '{"name":"w","version":"1.0.0","scripts":{"start":"node index.js"},"engines":{"node":"22"}}\n' >"$src/package.json"
+  printf '{"lockfileVersion":3,"name":"w","packages":{"":{"name":"w"}}}\n' >"$src/package-lock.json"
+  echo 'require("http").createServer((q, s) => s.end("hi")).listen(process.env.PORT)' >"$src/index.js"
+  add_app web A_ROUTES=web.example.com A_PORT=3000 A_STATE=new A_DIR=. A_BUILD=auto
+  local tmp; tmp=$(mktemp)
+  { printf 'API_KEY=sk_live_123\n'; env_ml_line CERT "$PEM"; } >"$tmp"
+  env_save web "$tmp"
+  app_load web
+  eq "$(build_detect "$src")" railpack
+  SPY_ENV="API_KEY CERT" build_image t1 "$SB/build.log" 2>"$SB/err" || { cat "$SB/err" "$SB/build.log"; return 1; }
+  local log ver
+  log=$(cat "$SB/docker.log"); ver=$(railpack_version)
+  has "$log" "buildx build --progress=plain --build-arg BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:v$ver"
+  has "$log" "--secret id=API_KEY,env=API_KEY --secret id=CERT,env=CERT"
+  has "$log" "--build-arg cache-key=fawwk-web"
+  has "$log" "-f $FAWWK_VAR/apps/web/railpack-plan.json -t fawwk/web:t1 $src"
+  [[ $log =~ secrets-hash=[0-9a-f]{64} ]]
+  hasnt "$log" sk_live_123
+  eq "$(cat "$SB/spy-API_KEY")" sk_live_123
+  eq "$(cat "$SB/spy-CERT")" "$PEM"
+  # The plan names the secrets but never holds their values.
+  eq "$(jq -c '.secrets' "$FAWWK_VAR/apps/web/railpack-plan.json")" '["API_KEY","CERT"]'
+  hasnt "$(cat "$FAWWK_VAR/apps/web/railpack-plan.json")" sk_live_123
+  has "$(cat "$SB/build.log")" "Detected Node"
+}
+
+test_railpack_migration_keeps_nixpacks_apps() {
+  load_fawwk
+  printf '#!/bin/sh\necho nixpacks 1.0\n' >"$SB/bin/nixpacks"; chmod +x "$SB/bin/nixpacks"
+  mkdir -p "$FAWWK_VAR/apps/old/src" "$FAWWK_VAR/apps/df/src" "$FAWWK_VAR/apps/fresh/src"
+  touch "$FAWWK_VAR/apps/old/src/package.json"
+  printf 'FROM scratch\n' >"$FAWWK_VAR/apps/df/src/Dockerfile"
+  touch "$FAWWK_VAR/apps/fresh/src/package.json"
+  add_app old A_BUILD=auto A_DIR=. A_IMAGE=fawwk/old:1
+  add_app df A_BUILD=auto A_DIR=. A_IMAGE=fawwk/df:1
+  add_app fresh A_BUILD=auto A_DIR=.   # never deployed: picks the new default
+  railpack_migrate 2>/dev/null
+  app_load old; eq "$A_BUILD" nixpacks
+  app_load df; eq "$A_BUILD" auto
+  app_load fresh; eq "$A_BUILD" auto
+  # Once per server: a later run leaves an app switched back to auto alone.
+  app_load old; app_set A_BUILD auto
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  railpack_migrate 2>/dev/null
+  app_load old; eq "$A_BUILD" auto
+}
+
+test_github_deploy_status() {
+  load_fawwk
+  mkdir -p "$FAWWK_ETC/github/fawwk-test"
+  openssl genrsa -out "$FAWWK_ETC/github/fawwk-test/key.pem" 2048 2>/dev/null
+  printf 'GH_APP_ID=123\nGH_SLUG=fawwk-test\nGH_OWNER=acme\nGH_OWNER_TYPE=Organization\n' >"$FAWWK_ETC/github/fawwk-test/app.conf"
+  # A fake GitHub: tokens (refused when DENY=1) and commit statuses, recorded in gh.log.
+  cat >"$SB/bin/curl" <<EOF
+#!/usr/bin/env bash
+data='' url=''
+while ((\$#)); do case \$1 in -d) data=\$2; shift ;; https://*) url=\$1 ;; esac; shift; done
+printf '%s %s\n' "\$url" "\$data" >>"$SB/gh.log"
+case \$url in
+  */access_tokens) [[ -n \${DENY-} ]] && exit 22; echo '{"token":"ghs_status_only"}' ;;
+  */statuses/*) echo '{}' ;;
+esac
+EOF
+  chmod +x "$SB/bin/curl"
+  add_app api A_AUTH=github A_GH_SOURCE=fawwk-test A_GH_INSTALL=42 A_REPO=https://github.com/acme/api.git \
+    'A_ROUTES=api.example.com example.com/api'
+  app_load api
+  local sha=0123456789abcdef0123456789abcdef01234567 log
+  deploy_status pending "Deploying" "$sha"
+  deploy_status success "Live" "$sha"
+  log=$(cat "$SB/gh.log")
+  has "$log" '/app/installations/42/access_tokens {"repositories":["api"],"permissions":{"statuses":"write"}}'
+  eq "$(grep -c access_tokens <<<"$log")" 1   # one token per deploy
+  has "$log" "/repos/acme/api/statuses/$sha {\"state\":\"pending\",\"description\":\"Deploying\",\"context\":\"fawwk/api\",\"target_url\":\"https://api.example.com\"}"
+  has "$log" '"state":"success"'
+  # Without the permission: one hint pointing at the org's app settings, and no failure.
+  DEPLOY_STATUS_TOKEN='' DEPLOY_STATUS_HINTED=0
+  local out
+  out=$(DENY=1 deploy_status pending x "$sha" 2>&1; DENY=1 deploy_status failure y "$sha" 2>&1)
+  has "$out" 'https://github.com/organizations/acme/settings/apps/fawwk-test/permissions'
+  eq "$(grep -c 'Commit statuses' <<<"$out")" 1
+  # Off, or not a GitHub App app: nothing is sent.
+  : >"$SB/gh.log"
+  GH_STATUSES=off deploy_status pending x "$sha"
+  A_AUTH=deploykey deploy_status pending x "$sha"
+  [[ ! -s $SB/gh.log ]]
+}
+
+# add_db NAME TYPE — writes a database config without starting anything.
+add_db() {
+  mkdir -p "$FAWWK_ETC/dbs/$1"
+  printf 'D_NAME=%s\nD_TYPE=%s\nD_VERSION=1\nD_IMAGE=img\nD_USER=%s\nD_PASSWORD=pw123\nD_DATABASE=%s\n' \
+    "$1" "$2" "$([[ $2 == redis ]] && echo default || echo "${1//-/_}")" "${1//-/_}" >"$FAWWK_ETC/dbs/$1/db.conf"
+}
+
+test_db_urls_links_and_retention() {
+  load_fawwk
+  add_db shop-db postgres; add_db cache redis; add_db docs mongodb
+  db_load shop-db; eq "$(db_url)" 'postgresql://shop_db:pw123@fawwk-db-shop-db:5432/shop_db'
+  eq "$(db_url_masked)" 'postgresql://shop_db:****@fawwk-db-shop-db:5432/shop_db'
+  db_load cache; eq "$(db_url)" 'redis://default:pw123@fawwk-db-cache:6379/0'
+  db_load docs; eq "$(db_url)" 'mongodb://docs:pw123@fawwk-db-docs:27017/docs?authSource=admin'
+  # Linking sets the app's env var and remembers it; unlinking removes both.
+  add_app api A_STATE=new
+  FAWWK_YES=1
+  db_load shop-db
+  db_link_apply api DATABASE_URL 2>/dev/null
+  has "$(cat "$(app_envfile api)")" 'DATABASE_URL=postgresql://shop_db:pw123@fawwk-db-shop-db:5432/shop_db'
+  db_load shop-db; eq "$D_LINKS" api:DATABASE_URL
+  eq "$(db_links_text)" api
+  db_unlink shop-db api 2>/dev/null
+  hasnt "$(cat "$(app_envfile api)")" DATABASE_URL
+  db_load shop-db; eq "$D_LINKS" ''
+  # Retention: newest 7 scheduled / pre-restore kept, manual ones never pruned; "latest" skips safety copies.
+  local d i
+  d=$(db_backups shop-db); mkdir -p "$d"
+  for i in 01 02 03 04 05 06 07 08 09; do
+    touch -d "2026-01-$i 00:00" "$d/shop-db-202601$i-000000-scheduled.dump"
+    touch -d "2026-01-$i 01:00" "$d/shop-db-202601$i-010000-manual.dump"
+  done
+  touch -d 2026-02-01 "$d/shop-db-20260201-000000-pre-restore.dump"
+  db_prune_backups
+  eq "$(find "$d" -name '*-scheduled.*' | wc -l)" 7
+  eq "$(find "$d" -name '*-manual.*' | wc -l)" 9
+  [[ ! -e $d/shop-db-20260101-000000-scheduled.dump ]]
+  eq "$(basename "$(db_latest_backup shop-db)")" shop-db-20260109-010000-manual.dump
+  # The daily timer.
+  DB_BACKUP_AT=02:30 db_timer_ensure
+  has "$(cat "$SYSTEMD_DIR/fawwk-db-backup.timer")" 'OnCalendar=*-*-* 02:30:00'
+  has "$(cat "$SYSTEMD_DIR/fawwk-db-backup.service")" "$ROOT/bin/fawwk db backup --all --scheduled"
+}
+
+test_db_create_validation() {
+  load_fawwk
+  add_db taken postgres
+  local out
+  out=$( (db_create taken --type postgres) 2>&1) && return 1; has "$out" 'already exists'
+  out=$( (db_create x1 --type mysql) 2>&1) && return 1;      has "$out" 'postgres, redis or mongodb'
+  out=$( (db_create x1 --version latest) 2>&1) && return 1;  has "$out" 'look like 16'
+  out=$( (db_create x1 --link nope) 2>&1) && return 1;       has "$out" "No app named 'nope'"
+  out=$( (db_create Bad_Name) 2>&1) && return 1;             has "$out" 'lowercase'
+  [[ ! -d $FAWWK_ETC/dbs/x1 ]]
+}
+
+# Real Docker: all three engines through create → link → write → backup → wipe → restore. Runs where a
+# Docker daemon is available (CI has one); skipped elsewhere.
+test_db_real_docker() {
+  rm -f "$SB/bin/docker"   # the real one
+  docker info >/dev/null 2>&1 || { echo "skipped (no Docker daemon)"; return 0; }
+  load_fawwk
+  add_app api A_STATE=new
+  FAWWK_YES=1
+  local sfx=$RANDOM
+  DB_TEST_NAMES="pg$sfx rd$sfx mg$sfx"
+  trap 'for n in $DB_TEST_NAMES; do docker rm -f "fawwk-db-$n" "fawwk-db-$n-restore" >/dev/null 2>&1; docker volume rm "fawwk_db_$n" >/dev/null 2>&1; done; rm -rf "$SB"' EXIT
+  local pw=()
+
+  db_create "pg$sfx" --type postgres --link api 2>/dev/null
+  has "$(cat "$(app_envfile api)")" "DATABASE_URL=postgresql://pg$sfx:"
+  db_load "pg$sfx"; pw+=("$D_PASSWORD")
+  pg() { db_exec "fawwk-db-pg$sfx" psql -tA -U "$D_USER" -h 127.0.0.1 "$D_DATABASE" -c "$1"; }
+  pg "create table t(v text); insert into t values ('kept');" >/dev/null
+  db_backup_cmd "pg$sfx" 2>/dev/null
+  pg "drop table t; create table later(x int);" >/dev/null
+  db_restore_cmd "pg$sfx" latest --yes 2>/dev/null
+  eq "$(pg 'select v from t')" kept
+  eq "$(pg "select count(*) from information_schema.tables where table_name = 'later'")" 0
+
+  db_create "rd$sfx" --type redis 2>/dev/null
+  db_load "rd$sfx"; pw+=("$D_PASSWORD")
+  rd() { db_exec "fawwk-db-rd$sfx" redis-cli "$@"; }
+  eq "$(docker exec "fawwk-db-rd$sfx" redis-cli get x 2>&1 | head -c 6)" NOAUTH
+  rd set k kept >/dev/null
+  db_backup_cmd "rd$sfx" 2>/dev/null
+  rd del k >/dev/null; rd set junk 1 >/dev/null
+  db_restore_cmd "rd$sfx" latest --yes 2>/dev/null
+  eq "$(rd get k)|$(rd get junk)" 'kept|'
+  docker restart "fawwk-db-rd$sfx" >/dev/null; db_wait_ready 30
+  eq "$(rd get k)" kept   # survives a restart (append-only file rebuilt from the snapshot)
+
+  if grep -qw avx /proc/cpuinfo; then
+    db_create "mg$sfx" --type mongodb 2>/dev/null
+    db_load "mg$sfx"
+    mg() { db_exec "fawwk-db-mg$sfx" mongosh --quiet -u "$D_USER" -p "$D_PASSWORD" --authenticationDatabase admin "$D_DATABASE" --eval "$1"; }
+    mg 'db.c.insertOne({v: "kept"})' >/dev/null
+    db_backup_cmd "mg$sfx" 2>/dev/null
+    mg 'db.c.drop(); db.junk.insertOne({x: 1})' >/dev/null
+    db_restore_cmd "mg$sfx" latest --yes 2>/dev/null
+    eq "$(mg 'db.c.findOne().v')|$(mg 'db.junk.countDocuments()')" 'kept|0'
+  else
+    echo "MongoDB part skipped (CPU without AVX)"
+  fi
+  # Nothing secret on the containers' command lines.
+  local cmdlines
+  cmdlines=$(docker inspect -f '{{.Config.Cmd}} {{.Args}}' "fawwk-db-pg$sfx" "fawwk-db-rd$sfx")
+  hasnt "$cmdlines" "${pw[0]}"; hasnt "$cmdlines" "${pw[1]}"
 }
 
 # ---------- run ----------

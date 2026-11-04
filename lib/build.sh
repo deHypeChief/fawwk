@@ -44,14 +44,37 @@ build_dockerfile_missing() {
 }
 
 # build_detect DIR -> dockerfile | static | nixpacks
+# The builder for a repo with no Dockerfile: Railpack when installed, else Nixpacks (servers set up
+# before Railpack support), else Railpack (so the error says what to install).
+build_auto_builder() {
+  if command -v railpack >/dev/null 2>&1; then echo railpack
+  elif command -v nixpacks >/dev/null 2>&1; then echo nixpacks
+  else echo railpack
+  fi
+}
+
+# build_detect DIR -> dockerfile | static | railpack | nixpacks
 build_detect() {
   local d=$1
   if build_dockerfile "$d" >/dev/null; then echo dockerfile
   elif [[ -f $d/index.html && ! -f $d/package.json ]]; then echo static
-  else echo nixpacks
+  else build_auto_builder
   fi
 }
 
+# build_tool_missing TYPE — prints why TYPE can't build on this server (empty if it can).
+build_tool_missing() {
+  case $1 in
+    railpack) command -v railpack >/dev/null 2>&1 || echo "Railpack isn't installed. Re-run: sudo fawwk setup (or add a Dockerfile to the repo)" ;;
+    nixpacks) command -v nixpacks >/dev/null 2>&1 || echo "Nixpacks isn't installed. Use: fawwk build <app> railpack (or add a Dockerfile)" ;;
+  esac
+  return 0
+}
+
+# The version of the installed railpack CLI, e.g. 0.43.0 (its frontend image must match).
+railpack_version() { railpack --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1; }
+
+# build_describe TYPE [DIR]
 # build_describe TYPE [DIR]
 build_describe() {
   local name=Dockerfile f
@@ -62,9 +85,11 @@ build_describe() {
       else echo "${name:-Dockerfile} found, building with Docker (tip: rename it to 'Dockerfile', the standard name)"
       fi ;;
     static)     echo "Static site (index.html), served by Caddy" ;;
-    nixpacks)
-      if [[ -n $name ]]; then echo "Building with Nixpacks (auto-detects the stack; $name is ignored)"
-      else echo "No Dockerfile, auto-detecting the stack with Nixpacks"
+    railpack | nixpacks)
+      local tool=Railpack
+      [[ $1 == nixpacks ]] && tool=Nixpacks
+      if [[ -n $name ]]; then echo "Building with $tool (auto-detects the stack; $name is ignored)"
+      else echo "No Dockerfile, auto-detecting the stack with $tool"
       fi ;;
   esac
 }
@@ -88,12 +113,13 @@ build_warn_dockerfile() {
 }
 
 # Best guess at the port the app listens on.
+# Best guess at the port the app listens on.
 build_port_hint() {
   local d=$1 type=$2 p=''
   case $type in
     static) p=$STATIC_PORT ;;
     dockerfile) p=$(grep -iE '^[[:space:]]*EXPOSE[[:space:]]+[0-9]+' "$(build_dockerfile "$d" || true)" 2>/dev/null | head -n1 | grep -oE '[0-9]+' | head -n1 || true) ;;
-    nixpacks)
+    railpack | nixpacks)
       if [[ -f $d/package.json ]]; then p=3000
       elif [[ -f $d/requirements.txt || -f $d/pyproject.toml ]]; then p=8000
       elif [[ -f $d/go.mod ]]; then p=8080
@@ -125,8 +151,51 @@ build_env_allowed() {
 }
 
 # build_image DEPLOY_ID LOGFILE — builds fawwk/<app>:<id>. Sets BUILT_IMAGE.
+# build_env_keys — the loaded app's env var names that go to the build (see fawwk buildenv), one per
+# line: single-line ones, then multi-line ones prefixed with "ml ".
+build_env_keys() {
+  local envf kv k
+  envf=$(app_envfile "$A_NAME")
+  if [[ -f $envf ]]; then
+    while IFS= read -r kv; do
+      k=${kv%%=*}
+      [[ -n $kv ]] && build_env_allowed "$k" && printf '%s\n' "$k"
+    done <"$envf"
+  fi
+  while IFS= read -r k; do build_env_allowed "$k" && printf 'ml %s\n' "$k"; done < <(env_ml_keys "$envf")
+  return 0
+}
+
+# build_railpack CTX IMAGE KEY... — plan with `railpack prepare`, then build the plan through
+# Railpack's BuildKit frontend with Docker's own BuildKit (no extra BuildKit container). Build-time
+# env goes in as BuildKit secrets: available to build steps, never written into the image.
+build_railpack() {
+  local ctx=$1 image=$2 ver plan info rc k prep=() secrets=() hash
+  shift 2
+  ver=$(railpack_version)
+  [[ -n $ver ]] || { echo "Couldn't run railpack. Re-run: sudo fawwk setup"; return 1; }
+  docker buildx version >/dev/null 2>&1 || { echo "docker buildx is missing. Install it with: apt-get install docker-buildx-plugin"; return 1; }
+  plan="$(app_var "$A_NAME")/railpack-plan.json"
+  info="$(app_var "$A_NAME")/railpack-info.json"
+  for k in "$@"; do prep+=(--env "$k"); secrets+=(--secret "id=$k,env=$k"); done
+  echo "==> railpack $ver: planning the build"
+  rc=0
+  railpack prepare "$ctx" --plan-out "$plan" --info-out "$info" "${prep[@]}" || rc=$?
+  # Exit 75 is a transient failure (e.g. a download): Railpack says to retry it.
+  if ((rc == 75)); then echo "==> transient error, retrying"; rc=0; railpack prepare "$ctx" --plan-out "$plan" --info-out "$info" "${prep[@]}" || rc=$?; fi
+  ((rc == 0)) || { echo "railpack couldn't plan this repo (exit $rc). Add a Dockerfile, or see https://railpack.com/config/file"; return 1; }
+  # Layers that used a secret are rebuilt when a value changes.
+  hash=$(for k in "$@"; do printf '%s=%s\n' "$k" "${!k}"; done | sha256sum | cut -d' ' -f1)
+  echo "==> building with $RAILPACK_FRONTEND:v$ver"
+  docker buildx build --progress=plain \
+    --build-arg BUILDKIT_SYNTAX="$RAILPACK_FRONTEND:v$ver" \
+    --build-arg secrets-hash="$hash" --build-arg cache-key="fawwk-$A_NAME" \
+    "${secrets[@]}" -f "$plan" -t "$image" "$ctx"
+}
+
+# build_image DEPLOY_ID LOGFILE — builds fawwk/<app>:<id>. Sets BUILT_IMAGE.
 build_image() {
-  local id=$1 log=$2 ctx type image envf kv args=()
+  local id=$1 log=$2 ctx type image envf missing line keys=() ml=()
   ctx=$(build_context)
   image="fawwk/$A_NAME:$id"
   envf=$(app_envfile "$A_NAME")
@@ -135,31 +204,49 @@ build_image() {
   type=$(build_resolve "$ctx" "${A_BUILD:-auto}")
   [[ $type == dockerfile ]] && { build_warn_dockerfile "$ctx" || true; }
   info "$(build_describe "$type" "$ctx")"
+  missing=$(build_tool_missing "$type")
+  [[ -z $missing ]] || { err "$missing"; return 1; }
 
   # App env is available at build time too (needed by e.g. Next.js NEXT_PUBLIC_* vars), unless
-  # `fawwk buildenv` limits it. Images stay on this server; they're never pushed anywhere.
-  local flag=--build-arg
-  [[ $type == nixpacks ]] && flag=--env
-  if [[ -f $envf ]]; then
-    while IFS= read -r kv; do [[ -n $kv ]] && build_env_allowed "${kv%%=*}" && args+=("$flag" "$kv"); done <"$envf"
+  # `fawwk buildenv` limits it. Builders get variable names; the values are exported into the build's
+  # environment, so they never appear on a command line. Images stay on this server.
+  while IFS= read -r line; do
+    if [[ $line == 'ml '* ]]; then ml+=("${line#ml }"); keys+=("${line#ml }"); else keys+=("$line"); fi
+  done < <(build_env_keys)
+  if [[ $type == nixpacks && ${#ml[@]} -gt 0 ]]; then
+    warn "Nixpacks can't take multi-line values at build time; not passed: ${ml[*]} (Railpack can: fawwk build $A_NAME railpack)"
   fi
 
-  case $type in
-    dockerfile)
-      local dfile
-      dfile=$(build_dockerfile "$ctx") || { echo "No Dockerfile in '${A_DIR:-.}' (build type is set to dockerfile)"; exit 1; }
-      DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
-    static)
-      local df
-      df="$(app_var "$A_NAME")/static.Dockerfile"
-      build_static_dockerfile "$df"
-      DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$df" "$ctx" ;;
-    nixpacks)
-      command -v nixpacks >/dev/null 2>&1 || { echo "Nixpacks isn't installed. Add a Dockerfile to the repo or re-run: sudo fawwk setup"; exit 1; }
-      nixpacks build "$ctx" --name "$image" "${args[@]}" ;;
-    *)
-      echo "Unknown build type: $type"; exit 1 ;;
-  esac >>"$log" 2>&1 &
+  (
+    # The values, for the names passed below.
+    if [[ -f $envf ]]; then
+      while IFS= read -r line; do
+        [[ -n $line ]] && build_env_allowed "${line%%=*}" && export "${line?}"
+      done <"$envf"
+    fi
+    env_export_multiline "$envf"
+    case $type in
+      dockerfile)
+        local dfile args=() k
+        dfile=$(build_dockerfile "$ctx") || { echo "No Dockerfile in '${A_DIR:-.}' (build type is set to dockerfile)"; exit 1; }
+        for k in "${keys[@]}"; do args+=(--build-arg "$k"); done
+        DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
+      static)
+        local df
+        df="$(app_var "$A_NAME")/static.Dockerfile"
+        build_static_dockerfile "$df"
+        DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$df" "$ctx" ;;
+      railpack)
+        build_railpack "$ctx" "$image" "${keys[@]}" ;;
+      nixpacks)
+        local args=() k
+        # Nixpacks writes --env values into the image; it gets single-line values only.
+        for k in "${keys[@]}"; do [[ " ${ml[*]} " == *" $k "* ]] || args+=(--env "$k=${!k}"); done
+        nixpacks build "$ctx" --name "$image" "${args[@]}" ;;
+      *)
+        echo "Unknown build type: $type"; exit 1 ;;
+    esac
+  ) >>"$log" 2>&1 &
   local pid=$! t0=$SECONDS
   spin_start "Building $A_NAME" "$log"
   if ! wait "$pid"; then

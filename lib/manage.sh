@@ -269,13 +269,16 @@ env_usage() {
   cat <<'EOF'
 Usage: sudo fawwk env <app> [command]
 
-  show [--reveal]     List variables (values masked unless --reveal)
-  set KEY=value ...   Add or change variables
-  unset KEY ...       Remove variables
-  import [file]       Merge a .env file, or paste one if no file is given
-  edit                Open all variables in your editor ($EDITOR, default nano)
-  check               Compare with the repo's .env.example
+  show [--reveal]       List variables (values masked unless --reveal)
+  set KEY=value ...     Add or change variables
+  set-file KEY <file>   Set KEY to a file's contents, e.g. a PEM key (multi-line is fine)
+  unset KEY ...         Remove variables
+  import [file]         Merge a .env file, or paste one if no file is given
+  edit                  Open all variables in your editor ($EDITOR, default nano)
+  check                 Compare with the repo's .env.example
 
+Multi-line values work everywhere: quote them in a .env file (KEY="line 1
+line 2"), pass them to set (set KEY="$(cat key.pem)"), or use set-file.
 Changes apply on the next restart; fawwk offers to restart right away.
 EOF
 }
@@ -286,33 +289,52 @@ cmd_env() {
   require_root env; require_setup
   app_load "$name"
   shift 2 || shift $#
-  local f tmp changed=0 kv k
+  local f d tmp changed=0 kv k v
   f=$(app_envfile "$name")
+  d=$(env_ml_dir "$f")
   [[ -f $f ]] || install -m 600 /dev/null "$f"
   case $sub in
     show | ls | list)
-      [[ -s $f ]] || { info "No variables set."; return 0; }
-      while IFS= read -r kv; do
-        k=${kv%%=*}
-        if [[ ${1-} == --reveal ]]; then printf '%s\n' "$kv"
-        else printf '%s=%s\n' "$k" "$(env_mask "${kv#*=}")"; fi
-      done <"$f"
+      (($(env_count "$f"))) || { info "No variables set."; return 0; }
+      if [[ ${1-} == --reveal ]]; then env_render "$f"; return 0; fi
+      while IFS= read -r kv; do printf '%s=%s\n' "${kv%%=*}" "$(env_mask "${kv#*=}")"; done <"$f"
+      while IFS= read -r k; do
+        IFS= read -r -d '' v <"$d/$k" || true
+        printf '%s=%s %s(multi-line, %d lines)%s\n' "$k" "$(env_mask "$v")" "$C_MUTED" "$(printf '%s' "$v" | wc -l | awk '{print $1 + 1}')" "$C_RESET"
+      done < <(env_ml_keys "$f")
       ;;
     set)
       (($#)) || die "Usage: fawwk env $name set KEY=value [KEY=value ...]"
       tmp=$(mktemp)
-      printf '%s\n' "$@" | env_parse >"$tmp"
+      for kv in "$@"; do
+        if [[ $kv == *$'\n'* ]]; then
+          # A value with newlines, e.g. set KEY="$(cat key.pem)": taken as is, no quoting needed.
+          k=${kv%%=*}
+          [[ $kv == *=* && $k =~ $RE_ENV_KEY ]] || { rm -f "$tmp"; die "Not KEY=value: ${kv:0:40}"; }
+          env_ml_line "$k" "${kv#*=}" >>"$tmp"
+        else
+          printf '%s\n' "$kv" | env_parse >>"$tmp"
+        fi
+      done
       [[ -s $tmp ]] || { rm -f "$tmp"; die "Nothing valid to set. Use KEY=value."; }
       env_save "$name" "$tmp"
-      ok "Set: $(cut -d= -f1 "$tmp" | tr '\n' ' ')"
+      ok "Set: $(env_parsed_keys "$tmp" | tr '\n' ' ')"
+      rm -f "$tmp"; changed=1
+      ;;
+    set-file)
+      k=${1-}
+      [[ $k =~ $RE_ENV_KEY && -n ${2-} ]] || die "Usage: fawwk env $name set-file KEY <file>"
+      [[ -f $2 ]] || die "File not found: $2"
+      tmp=$(mktemp)
+      IFS= read -r -d '' v <"$2" || true
+      if [[ $v == *$'\n'* ]]; then env_ml_line "$k" "$v" >"$tmp"; else printf '%s=%s\n' "$k" "$v" >"$tmp"; fi
+      env_save "$name" "$tmp"
+      ok "Set $k from $2 ($(wc -c <"$2" | tr -d ' ') bytes)"
       rm -f "$tmp"; changed=1
       ;;
     unset | rm)
       (($#)) || die "Usage: fawwk env $name unset KEY [KEY ...]"
-      tmp=$(mktemp)
-      cp "$f" "$tmp"
-      for k in "$@"; do awk -v k="$k" 'index($0, k "=") != 1' "$tmp" >"$tmp.2"; mv "$tmp.2" "$tmp"; done
-      install -m 600 "$tmp" "$f"; rm -f "$tmp"
+      env_unset "$name" "$@"
       ok "Removed: $*"; changed=1
       ;;
     import)
@@ -324,19 +346,24 @@ cmd_env() {
         env_read_paste >"$tmp"
       fi
       env_save "$name" "$tmp"
-      ok "Imported $(grep -c '=' "$tmp" || true) variable(s)"
+      ok "Imported $(env_parsed_keys "$tmp" | wc -l | tr -d ' ') variable(s)"
       rm -f "$tmp"; changed=1
       ;;
     edit)
       tmp=$(mktemp --suffix=.env)
       chmod 600 "$tmp"
-      cp "$f" "$tmp"
+      env_render "$f" >"$tmp"
+      cp -p "$tmp" "$tmp.orig"
       "${EDITOR:-nano}" "$tmp"
-      env_parse <"$tmp" >"$tmp.clean"
-      if cmp -s "$tmp.clean" "$f"; then info "No changes."
-      else install -m 600 "$tmp.clean" "$f"; ok "Saved"; changed=1
+      if cmp -s "$tmp" "$tmp.orig"; then info "No changes."
+      else
+        # The edited text is the whole env now: rebuild both stores from it.
+        env_parse <"$tmp" >"$tmp.clean"
+        : >"$f"; rm -rf "$d"
+        env_save "$name" "$tmp.clean"
+        ok "Saved"; changed=1
       fi
-      rm -f "$tmp" "$tmp.clean"
+      rm -f "$tmp" "$tmp.orig" "$tmp.clean"
       ;;
     check)
       local ex
@@ -440,10 +467,13 @@ cmd_build() {
   if [[ -z $t ]]; then
     info "Build method for $1: ${A_BUILD:-auto}"
     [[ -d $ctx ]] && hint "Next deploy: $(build_describe "$(build_resolve "$ctx" "${A_BUILD:-auto}")" "$ctx")"
-    hint "Change with: fawwk build $1 auto|dockerfile|nixpacks|static"
+    hint "Change with: fawwk build $1 auto|dockerfile|railpack|nixpacks|static"
     return 0
   fi
-  [[ $t =~ ^(auto|dockerfile|nixpacks|static)$ ]] || die "Use: fawwk build $1 auto|dockerfile|nixpacks|static"
+  [[ $t =~ ^(auto|dockerfile|railpack|nixpacks|static)$ ]] || die "Use: fawwk build $1 auto|dockerfile|railpack|nixpacks|static"
+  local missing
+  missing=$(build_tool_missing "$t")
+  [[ -z $missing ]] || die "$missing"
   app_set A_BUILD "$t"
   ok "Build method for $1: $t (used from the next deploy)"
   if [[ -n $A_IMAGE ]] && confirm "Redeploy $1 now?" Y; then
@@ -512,6 +542,11 @@ cmd_remove() {
   local v
   for v in $A_VOLUMES; do docker volume rm "$(volume_name "$name" "$v")" >/dev/null 2>&1 || true; done
   rm -f "$CRON_DIR/fawwk-$name" "$FAWWK_LOG/$name.log" "$FAWWK_LOG/$name-cron.log"
+  local db
+  while IFS= read -r db; do
+    [[ -z $db ]] && continue
+    (db_load "$db"; [[ " $D_LINKS " == *" $name:"* ]] && db_links_remove "$name") || true
+  done < <(db_names)
   rm -rf "$(app_dir "$name")" "$(app_var "$name")"
   proxy_reload || true
   if [[ $A_AUTH == deploykey ]]; then
@@ -595,12 +630,38 @@ cmd_update() {
   exec "$FAWWK_HOME/bin/fawwk" post-update "$before"
 }
 
+# Railpack replaces Nixpacks as the builder `auto` picks for repos without a Dockerfile. Apps that
+# have already deployed that way keep Nixpacks, so an update never changes how they build; once per
+# server, they're pinned to `nixpacks` (switch with: fawwk build <app> railpack).
+railpack_migrate() {
+  local name ctx pinned=()
+  [[ ${RAILPACK_MIGRATED-} == 1 ]] && return 0
+  if command -v nixpacks >/dev/null 2>&1; then
+    while IFS= read -r name; do
+      [[ -z $name ]] && continue
+      app_load "$name"
+      [[ ${A_BUILD:-auto} == auto && -n $A_IMAGE ]] || continue
+      ctx=$(build_context)
+      [[ -d $ctx ]] || continue
+      build_dockerfile "$ctx" >/dev/null && continue
+      [[ -f $ctx/index.html && ! -f $ctx/package.json ]] && continue
+      app_set A_BUILD nixpacks
+      pinned+=("$name")
+    done < <(app_names)
+  fi
+  conf_set "$FAWWK_CONF" RAILPACK_MIGRATED 1
+  ((${#pinned[@]} == 0)) || info "Kept Nixpacks for ${pinned[*]}. New apps use Railpack; switch one with: fawwk build <app> railpack"
+}
+
 # Runs after `fawwk update` (from the new code): refreshes what setup installed.
 cmd_post_update() {
   require_root post-update
   [[ -f $FAWWK_CONF ]] || { ok "Fawwk updated to $(fawwk_version)"; return 0; }
   require_setup
   setup_logrotate >/dev/null 2>&1 || true
+  railpack_migrate
+  [[ -n $(db_names) ]] && db_timer_ensure
+  setup_railpack >/dev/null 2>&1 || warn "Couldn't install Railpack $RAILPACK_VERSION. Try: sudo fawwk setup"
   if hooks_enabled; then
     # The webhook receiver runs code from this checkout; recreate or restart it to pick up changes.
     if hooks_container_current; then
