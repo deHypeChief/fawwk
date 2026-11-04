@@ -93,7 +93,7 @@ t() {
     PASS=$((PASS + 1)); printf '  ok    %s\n' "$name"
   else
     FAIL=$((FAIL + 1)); FAILED+=("$name"); printf '  FAIL  %s\n' "$name"
-    sed 's/^/        /' "$out" | tail -n 25
+    sed 's/^/        /' "$out" | tail -n 80
   fi
   rm -f "$out"
 }

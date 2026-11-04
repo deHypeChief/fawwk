@@ -117,6 +117,17 @@ db_ready() {
   esac
 }
 
+# What the readiness check prints (for error messages).
+db_ready_output() {
+  local c
+  c=$(db_container "$D_NAME")
+  case $D_TYPE in
+    postgres) db_exec "$c" pg_isready -U "$D_USER" -d "$D_DATABASE" -h 127.0.0.1 ;;
+    redis) db_exec "$c" redis-cli ping ;;
+    mongodb) db_exec "$c" mongosh --quiet -u "$D_USER" -p "$D_PASSWORD" --authenticationDatabase admin --eval 'db.runCommand({ping: 1}).ok' ;;
+  esac
+}
+
 db_wait_ready() {
   local deadline=$((SECONDS + ${1:-90}))
   while ((SECONDS < deadline)); do
@@ -421,6 +432,8 @@ db_create() {
     spin_stop
     err "The database didn't start. Its last log lines:"
     docker logs --tail 20 "$(db_container "$name")" 2>&1 | ui_quote
+    info "Container: $(docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$(db_container "$name")" 2>&1)"
+    info "Readiness check said: $(db_ready_output 2>&1 | tail -n 3 | tr '\n' ' ')"
     [[ $type == mongodb ]] && hint "MongoDB 5+ needs a CPU with AVX. Older or emulated CPUs: try --version 4.4"
     docker rm -f "$(db_container "$name")" >/dev/null 2>&1 || true
     docker volume rm "$(db_volume "$name")" >/dev/null 2>&1 || true
