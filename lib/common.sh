@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fawwk — shared helpers: paths, config files, validation, locking.
 
-FAWWK_VERSION="0.1.0"
+FAWWK_VERSION="0.2.0"
 
 # ---------- paths (overridable for testing) ----------
 FAWWK_ETC="${FAWWK_ETC:-/etc/fawwk}"          # config + secrets (root only)
@@ -11,10 +11,15 @@ FAWWK_CONF="$FAWWK_ETC/fawwk.conf"
 APPS_ETC="$FAWWK_ETC/apps"
 APPS_VAR="$FAWWK_VAR/apps"
 CADDY_DIR="$FAWWK_ETC/caddy"
+CRON_DIR="${FAWWK_CRON_DIR:-/etc/cron.d}"     # cron jobs: fawwk-<app>
 FAWWK_NETWORK="fawwk"
 FAWWK_PROXY="fawwk-proxy"
 KEEP_IMAGES="${KEEP_IMAGES:-3}"            # old images kept per app for rollback
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-90}"     # seconds a new container gets to answer
+KEEP_LOGS="${KEEP_LOGS:-20}"               # build logs kept per app
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-90}"     # default seconds a new container gets to answer
+# Pinned so a re-run of setup can't silently pull a different proxy. Override to upgrade.
+CADDY_IMAGE="${CADDY_IMAGE:-caddy:2.10.2}"
+CADDY_STATIC_IMAGE="${CADDY_STATIC_IMAGE:-caddy:2.10.2-alpine}"
 
 FAWWK_YES=0        # --yes: accept defaults, answer yes, never prompt
 LOCK_NOWAIT=0     # used by auto-deploy: skip apps that are busy instead of waiting
@@ -34,7 +39,8 @@ conf_set() {
 # ---------- app config ----------
 # Every app lives in $APPS_ETC/<name>/ (app.conf, env, token|deploy_key, history)
 # and $APPS_VAR/<name>/ (src checkout, build logs). Fields are prefixed A_.
-APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_GH_SOURCE A_GH_INSTALL A_DIR A_BUILD A_PORT A_ROUTES A_STRIP A_HEALTH
+APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_TOKEN_USER A_GH_SOURCE A_GH_INSTALL A_DIR A_BUILD A_BUILD_ENV
+            A_PORT A_ROUTES A_STRIP A_HEALTH A_HEALTH_TIMEOUT A_MEMORY A_CPUS A_VOLUMES A_RELEASE
             A_AUTO A_STATE A_CONTAINER A_IMAGE A_COMMIT A_FAILED_COMMIT A_CREATED A_DEPLOYED)
 
 app_dir()     { printf '%s/%s' "$APPS_ETC" "$1"; }
@@ -74,6 +80,8 @@ app_save() {
 app_require_arg() { [[ -n ${1-} ]] || die "Which app? Usage: fawwk $2 <app>   (see: fawwk list)"; }
 
 # app_lock NAME — one operation per app at a time (deploy, restart, remove...).
+# Use app_load_locked instead when you'll act on the app's state: another operation may have
+# changed it while this one waited for the lock.
 app_lock() {
   mkdir -p /run/lock
   exec 9>"/run/lock/fawwk-$1.lock"
@@ -81,6 +89,13 @@ app_lock() {
   if [[ $LOCK_NOWAIT -eq 1 ]]; then info "$1 is busy, skipping"; exit 0; fi
   info "Another operation on '$1' is running; waiting for it to finish..."
   flock 9
+}
+
+# app_load_locked NAME — takes the app's lock, then (re)loads its config so it's current.
+app_load_locked() {
+  app_exists "$1" || die "No app named '$1'. See: fawwk list"
+  app_lock "$1"
+  app_load "$1"
 }
 
 # ---------- server config ----------
@@ -111,10 +126,29 @@ dns_points_here() {
   [[ $'\n'$ips$'\n' == *$'\n'"$SERVER_IP"$'\n'* ]]
 }
 
+# IPv6 addresses HOST resolves to (AAAA records), one per line.
+dns_lookup6() { getent ahostsv6 "$1" 2>/dev/null | awk '$1 ~ /:/ && $1 !~ /^::ffff:/ {print $1}' | sort -u || true; }
+
+# This server's public IPv6 addresses, one per line.
+server_ip6() { ip -6 addr show scope global 2>/dev/null | awk '/inet6/ {sub("/.*", "", $2); print $2}' || true; }
+
+# Warns when HOST has an AAAA record that isn't this server: Let's Encrypt prefers IPv6, so a stale
+# AAAA record makes certificates fail even though the A record is right.
+dns_report6() {
+  local host=$1 v6 mine a bad=''
+  v6=$(dns_lookup6 "$host")
+  [[ -n $v6 ]] || return 0
+  mine=$'\n'$(server_ip6)$'\n'
+  for a in $v6; do [[ $mine == *$'\n'"$a"$'\n'* ]] || bad+="$a "; done
+  [[ -z $bad ]] && return 0
+  warn "DNS: $host also has an AAAA (IPv6) record ${bad% } that isn't this server. Delete it, or HTTPS certificates may fail."
+}
+
 dns_report() {
   local host=$1 got
   if dns_points_here "$host"; then
     ok "DNS: $host → $SERVER_IP"
+    dns_report6 "$host"
   else
     got=$(dns_lookup "$host" | tr '\n' ' ')
     if [[ -z $got ]]; then
@@ -137,11 +171,15 @@ valid_port()     { [[ $1 =~ ^[0-9]+$ ]] && (($1 >= 1 && $1 <= 65535)) || { warn 
 valid_subdir()   { [[ $1 == . || ($1 =~ ^[A-Za-z0-9._/-]+$ && $1 != /* && $1 != *..*) ]] || { warn "Use a relative folder like 'apps/web' or '.'"; return 1; }; }
 
 # route = host or host/path, e.g. api.example.com or example.com/api
+# Hostnames are case-insensitive and get lowercased; paths are case-sensitive and are kept.
 route_normalize() {
-  local r=${1,,}
-  r=${r#http://}; r=${r#https://}
+  local r=$1 host path=''
+  [[ ${r,,} == http://* ]] && r=${r:7}
+  [[ ${r,,} == https://* ]] && r=${r:8}
   r=${r%/}
-  printf '%s' "$r"
+  host=${r%%/*}
+  [[ $r == */* ]] && path="/${r#*/}"
+  printf '%s%s' "${host,,}" "$path"
 }
 
 valid_route() {
@@ -152,6 +190,13 @@ valid_route() {
 }
 
 need_arg() { [[ -n ${2-} && ${2-} != --* ]] || die "Option $1 needs a value"; }
+
+# fawwk_version — the release, plus the commit when installed from git (e.g. 0.2.0 (3f2a1bc)).
+fawwk_version() {
+  local sha
+  sha=$(git -C "$FAWWK_HOME" rev-parse --short HEAD 2>/dev/null || true)
+  printf '%s%s' "$FAWWK_VERSION" "${sha:+ ($sha)}"
+}
 
 # sanitize "My_Repo.Name" -> "my-repo-name"
 sanitize_name() {

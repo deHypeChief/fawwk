@@ -16,6 +16,19 @@ RUN_SETUP=0
 
 [[ $EUID -eq 0 ]] || { echo "Run as root: sudo ./install.sh" >&2; exit 1; }
 
+# The install folder gets replaced, so refuse anything that isn't empty or a previous Fawwk install
+# (a typo like FAWWK_PREFIX=/opt would otherwise wipe /opt).
+PREFIX=${PREFIX%/}
+case $PREFIX in
+  '' | / | /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /usr/* | /var | /var/lib)
+    [[ $PREFIX == /usr/local/fawwk || $PREFIX == /usr/share/fawwk ]] ||
+      { echo "Refusing to install into $PREFIX. Pick a dedicated folder like /opt/fawwk." >&2; exit 1; } ;;
+esac
+if [[ -e $PREFIX && ! -f $PREFIX/bin/fawwk && -n $(ls -A "$PREFIX" 2>/dev/null) ]]; then
+  echo "$PREFIX exists and isn't a Fawwk install. Remove it or set FAWWK_PREFIX to another folder." >&2
+  exit 1
+fi
+
 here=''
 if [[ -n ${BASH_SOURCE[0]-} && -f ${BASH_SOURCE[0]} ]]; then
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -25,7 +38,7 @@ if [[ -n $here && -f $here/bin/fawwk && -d $here/lib ]]; then
   if [[ $here != "$PREFIX" ]]; then
     echo "Installing Fawwk from $here to $PREFIX"
     mkdir -p "$PREFIX"
-    rm -rf "$PREFIX/bin" "$PREFIX/lib"
+    rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/lib"
     cp -r "$here/bin" "$here/lib" "$PREFIX/"
     cp -f "$here/README.md" "$PREFIX/" 2>/dev/null || true
     [[ -d $here/.git ]] && { rm -rf "$PREFIX/.git"; cp -r "$here/.git" "$PREFIX/"; }
@@ -41,11 +54,13 @@ fi
 # Files copied from Windows may carry CRLF line endings, which break bash.
 find "$PREFIX/bin" "$PREFIX/lib" -type f -exec sed -i 's/\r$//' {} +
 chmod 755 "$PREFIX/bin/fawwk" "$PREFIX/lib/askpass.sh"
-chmod 644 "$PREFIX"/lib/*.sh
+chmod 644 "$PREFIX"/lib/*.sh "$PREFIX/lib/hooks.py"
 chmod 755 "$PREFIX/lib/askpass.sh"
 ln -sf "$PREFIX/bin/fawwk" /usr/local/bin/fawwk
 
 echo "Fawwk $("$PREFIX/bin/fawwk" version) installed: $(command -v fawwk)"
+# Already set up (re-install over an existing server): refresh timers, log rotation, webhook receiver.
+[[ -f /etc/fawwk/fawwk.conf ]] && ((RUN_SETUP == 0)) && "$PREFIX/bin/fawwk" post-update installed || true
 if ((RUN_SETUP)); then
   # When piped from curl, stdin is the script itself; answer setup's questions from the terminal.
   if [[ ! -t 0 && -r /dev/tty ]]; then exec fawwk setup </dev/tty; fi

@@ -19,13 +19,34 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 SECRETS, PAGES, CODES, INBOX = "/secrets", "/pages", "/codes", "/inbox"
 MAX_BODY = 10 * 1024 * 1024
 STATE_RE = re.compile(r"^[a-f0-9]{32}$")
+DELIVERY_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+# GitHub retries and "Redeliver" resend the same X-GitHub-Delivery id; remember recent ones so a
+# delivery is queued once. In memory only: after a restart, the host still skips commits it has.
+SEEN_MAX = 1000
+_seen = OrderedDict()
+_seen_lock = threading.Lock()
+
+
+def first_delivery(delivery_id):
+    if not DELIVERY_RE.match(delivery_id):
+        return True
+    with _seen_lock:
+        if delivery_id in _seen:
+            return False
+        _seen[delivery_id] = True
+        while len(_seen) > SEEN_MAX:
+            _seen.popitem(last=False)
+    return True
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Fawwk</title><style>body{{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222}}
@@ -55,6 +76,7 @@ def secrets():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "fawwk-hooks"
+    timeout = 15  # seconds a client may stall; frees the thread of a slow or dead connection
 
     def log_message(self, fmt, *args):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
@@ -128,8 +150,11 @@ class Handler(BaseHTTPRequestHandler):
         if not ref.startswith("refs/heads/") or p.get("deleted") or not re.match(r"^[0-9a-f]{40}$", sha):
             return self.reply(202, "Ignored\n")
 
+        delivery = self.headers.get("X-GitHub-Delivery", "")
+        if not first_delivery(delivery):
+            return self.reply(200, "Already queued\n")
         job = {"repo": repo, "branch": ref[len("refs/heads/"):], "sha": sha,
-               "delivery": self.headers.get("X-GitHub-Delivery", ""), "at": int(time.time())}
+               "delivery": delivery, "at": int(time.time())}
         name = "%d-%s.json" % (time.time_ns(), sha[:12])
         write_atomic(INBOX, name, json.dumps(job))
         self.reply(202, "Queued\n")
