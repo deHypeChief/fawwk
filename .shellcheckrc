@@ -1,0 +1,4 @@
+# Fawwk is split into files that bin/fawwk sources together, so variables set in one file and used in
+# another look unassigned (SC2154) or unused (SC2034) to ShellCheck when it checks files one by one.
+shell=bash
+disable=SC2034,SC2154

@@ -106,12 +106,22 @@ build_port_hint() {
 build_static_dockerfile() {
   local f=$1
   cat >"$f" <<EOF
-FROM caddy:2-alpine
+FROM $CADDY_STATIC_IMAGE
 COPY . /srv
 RUN printf ':$STATIC_PORT {\n\troot * /srv\n\tencode zstd gzip\n\ttry_files {path} {path}/ {path}.html /index.html\n\tfile_server\n}\n' > /etc/caddy/Caddyfile
 EXPOSE $STATIC_PORT
 EOF
   printf '.git\n.github\n.env\n.env.*\nnode_modules\n' >"$f.dockerignore"
+}
+
+# build_env_allowed KEY — 0 if the app's env var KEY is passed to the build (A_BUILD_ENV:
+# empty or "all" = every variable, "none" = no variable, otherwise a list of keys).
+build_env_allowed() {
+  case ${A_BUILD_ENV:-all} in
+    all) return 0 ;;
+    none) return 1 ;;
+  esac
+  [[ " ${A_BUILD_ENV//,/ } " == *" $1 "* ]]
 }
 
 # build_image DEPLOY_ID LOGFILE — builds fawwk/<app>:<id>. Sets BUILT_IMAGE.
@@ -126,12 +136,12 @@ build_image() {
   [[ $type == dockerfile ]] && { build_warn_dockerfile "$ctx" || true; }
   info "$(build_describe "$type" "$ctx")"
 
-  # App env is available at build time too (needed by e.g. Next.js NEXT_PUBLIC_* vars).
-  # Images stay on this server; they're never pushed anywhere.
+  # App env is available at build time too (needed by e.g. Next.js NEXT_PUBLIC_* vars), unless
+  # `fawwk buildenv` limits it. Images stay on this server; they're never pushed anywhere.
   local flag=--build-arg
   [[ $type == nixpacks ]] && flag=--env
   if [[ -f $envf ]]; then
-    while IFS= read -r kv; do [[ -n $kv ]] && args+=("$flag" "$kv"); done <"$envf"
+    while IFS= read -r kv; do [[ -n $kv ]] && build_env_allowed "${kv%%=*}" && args+=("$flag" "$kv"); done <"$envf"
   fi
 
   case $type in
