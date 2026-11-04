@@ -19,6 +19,14 @@ jobs:
       - name: Webhook receiver compiles
         run: python3 -m py_compile lib/hooks.py
 
+      - name: Install Railpack (the version Fawwk pins, for its build test)
+        run: |
+          v=$(sed -n 's/^RAILPACK_VERSION="${RAILPACK_VERSION:-\([0-9.]*\)}"/\1/p' lib/common.sh)
+          curl -fsSL "https://github.com/railwayapp/railpack/releases/download/v$v/railpack-v$v-x86_64-unknown-linux-musl.tar.gz" |
+            sudo tar -xz -C /usr/local/bin railpack
+          railpack --version
+
       - name: Tests
-        # Sandboxed (temp dirs, stub docker), but the commands under test check for root.
+        # Sandboxed (temp dirs, stub docker), but the commands under test check for root. The database
+        # test uses the runner's real Docker: Postgres, Redis and MongoDB, created, backed up and restored.
         run: sudo -E env "PATH=$PATH" tests/run.sh

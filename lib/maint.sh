@@ -33,7 +33,8 @@ Usage: sudo fawwk backup [file] [--with-data]
 
 Saves everything needed to rebuild this server's apps on a new one: server settings, every app's
 config, env vars, deploy keys and tokens, GitHub connections, cron jobs and HTTPS certificates.
-With --with-data, app volumes are included too (stop busy databases first for a consistent copy).
+With --with-data, app volumes and a fresh backup of every managed database (fawwk db) are included
+too. Database copies are consistent; for app volumes, stop busy apps first for a consistent copy.
 
 The file contains secrets. Keep it somewhere safe. Restore on a new server with: fawwk restore <file>
 EOF
@@ -68,6 +69,15 @@ cmd_backup() {
         [[ -d $vdir/$v/_data ]] && vols+=("$v/_data")
       done
     done < <(app_names)
+    # Databases go in as fresh logical backups, not raw volume files (those aren't safe to copy live).
+    local file
+    while IFS= read -r name; do
+      [[ -z $name ]] && continue
+      db_load "$name"
+      if [[ $(db_state) == running ]] && file=$(db_backup_now manual); then paths+=("${file#/}")
+      else warn "Couldn't back up database $name (is it running?); its settings are included, its data isn't."
+      fi
+    done < <(db_names)
   fi
   local targs=(-czf "$out" -C / "${paths[@]}")
   ((${#vols[@]})) && targs+=(-C "$vdir" "${vols[@]}")
@@ -90,10 +100,11 @@ cmd_restore() {
   step "Restoring $file"
   tar -xzf "$file" -C "$tmp" || { rm -rf "$tmp"; die "Couldn't read the backup."; }
   [[ -f $tmp/${FAWWK_CONF#/} ]] || { rm -rf "$tmp"; die "That isn't a fawwk backup (no ${FAWWK_CONF#/})."; }
-  mkdir -p "$FAWWK_ETC" "$FAWWK_VAR/hooks"
+  mkdir -p "$FAWWK_ETC" "$FAWWK_VAR/hooks" "$APPS_VAR" "$FAWWK_LOG"
   cp -a "$tmp/${FAWWK_ETC#/}/." "$FAWWK_ETC/"
   chmod 700 "$FAWWK_ETC"
   [[ -d $tmp/${FAWWK_VAR#/}/hooks/secrets ]] && { mkdir -p "$FAWWK_VAR/hooks/secrets"; cp -a "$tmp/${FAWWK_VAR#/}/hooks/secrets/." "$FAWWK_VAR/hooks/secrets/"; }
+  [[ -d $tmp/${BACKUPS_DIR#/} ]] && { mkdir -p "$BACKUPS_DIR"; chmod 700 "$BACKUPS_DIR"; cp -a "$tmp/${BACKUPS_DIR#/}/." "$BACKUPS_DIR/"; }
   [[ -d $tmp/${CRON_DIR#/} ]] && { mkdir -p "$CRON_DIR"; cp -a "$tmp/${CRON_DIR#/}/." "$CRON_DIR/"; }
   ok "Restored server settings and $(app_names | wc -l) app(s)"
   # Containers and images from the old server don't exist here: every app starts as "new".
@@ -120,10 +131,17 @@ cmd_restore() {
   # shellcheck disable=SC1090
   source "$FAWWK_CONF"
   printf '\n' >&2
-  ui_box --title "Restored" "Next:" "" \
-    "  1. ${C_ACCENT}sudo fawwk setup --yes${C_RESET}       installs Docker, the proxy, timers" \
-    "  2. Point DNS for $DOMAIN (and *.$DOMAIN) to this server" \
-    "  3. ${C_ACCENT}sudo fawwk deploy --all${C_RESET}      builds and starts every app"
+  local steps=("  1. ${C_ACCENT}sudo fawwk setup --yes${C_RESET}       installs Docker, the proxy, timers"
+    "  2. Point DNS for $DOMAIN (and *.$DOMAIN) to this server") n=3 d
+  if [[ -n $(db_names) ]]; then
+    # Databases first: apps (and their release commands) expect them to be there.
+    steps+=("  $n. ${C_ACCENT}sudo fawwk db start --all${C_RESET}   recreates the databases (empty)"); n=$((n + 1))
+    while IFS= read -r d; do
+      [[ -n $(db_latest_backup "$d") ]] && { steps+=("  $n. ${C_ACCENT}sudo fawwk db restore $d latest${C_RESET}"); n=$((n + 1)); }
+    done < <(db_names)
+  fi
+  steps+=("  $n. ${C_ACCENT}sudo fawwk deploy --all${C_RESET}      builds and starts every app")
+  ui_box --title "Restored" "Next:" "" "${steps[@]}"
   UI_IN_STEP=0
 }
 
@@ -141,8 +159,8 @@ cmd_uninstall() {
   require_root uninstall
   warn "This removes every Fawwk app (containers, images, env vars, keys), the proxy, the webhook"
   warn "receiver, timers and all Fawwk settings. Docker, UFW and fail2ban stay installed."
-  ((data)) && warn "--delete-data: app volumes and HTTPS certificates are deleted too." ||
-    info "App volumes and HTTPS certificates are kept (docker volume ls | grep fawwk_)."
+  ((data)) && warn "--delete-data: app volumes, databases, their backups and HTTPS certificates are deleted too." ||
+    info "App volumes, database data and backups, and HTTPS certificates are kept (docker volume ls | grep fawwk_)."
   if ((yes == 0)); then
     is_interactive || die "Add --yes to uninstall without a prompt."
     local typed
@@ -150,13 +168,14 @@ cmd_uninstall() {
     [[ $typed == uninstall ]] || die "Cancelled."
   fi
   step "Uninstalling Fawwk"
-  systemctl disable --now fawwk-autodeploy.timer fawwk-hooks.path >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/fawwk-autodeploy.{service,timer} /etc/systemd/system/fawwk-hooks.{service,path}
+  systemctl disable --now fawwk-autodeploy.timer fawwk-hooks.path fawwk-db-backup.timer >/dev/null 2>&1 || true
+  rm -f "$SYSTEMD_DIR"/fawwk-autodeploy.{service,timer} "$SYSTEMD_DIR"/fawwk-hooks.{service,path} "$SYSTEMD_DIR"/fawwk-db-backup.{service,timer}
   systemctl daemon-reload >/dev/null 2>&1 || true
   rm -f "$CRON_DIR"/fawwk-* "$LOGROTATE_DIR/fawwk"
   ok "Timers, webhook watcher and cron jobs removed"
   if command -v docker >/dev/null 2>&1; then
     docker ps -aq --filter label=fawwk.app | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker ps -aq --filter label=fawwk.db | xargs -r docker rm -f >/dev/null 2>&1 || true
     docker rm -f "$FAWWK_PROXY" fawwk-hooks >/dev/null 2>&1 || true
     docker images --format '{{.Repository}}:{{.Tag}}' | grep '^fawwk/' | xargs -r docker rmi -f >/dev/null 2>&1 || true
     docker network rm "$FAWWK_NETWORK" >/dev/null 2>&1 || true
@@ -165,7 +184,14 @@ cmd_uninstall() {
     fi
     ok "Containers, images and network removed"
   fi
-  rm -rf "${FAWWK_ETC:?}" "${FAWWK_VAR:?}" "${FAWWK_LOG:?}"
+  if ((data)) || [[ ! -d $BACKUPS_DIR ]]; then
+    rm -rf "${FAWWK_ETC:?}" "${FAWWK_VAR:?}" "${FAWWK_LOG:?}"
+  else
+    # Database backups outlive Fawwk unless --delete-data: everything else in FAWWK_VAR goes.
+    find "${FAWWK_VAR:?}" -mindepth 1 -maxdepth 1 ! -name backups -exec rm -rf {} +
+    rm -rf "${FAWWK_ETC:?}" "${FAWWK_LOG:?}"
+    info "Database backups kept in $BACKUPS_DIR"
+  fi
   ok "Settings and data removed"
   [[ -L /usr/local/bin/fawwk ]] && rm -f /usr/local/bin/fawwk
   if [[ $FAWWK_HOME == /opt/fawwk && -d /opt/fawwk/bin ]]; then rm -rf /opt/fawwk; fi

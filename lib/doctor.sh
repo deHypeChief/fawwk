@@ -8,7 +8,7 @@ cmd_doctor() {
   if [[ -f $FAWWK_CONF ]]; then
     # shellcheck disable=SC1090
     source "$FAWWK_CONF"
-    ok "Configured for $DOMAIN (setup on $SETUP_AT)"
+    ok "Configured for $DOMAIN (setup on ${SETUP_AT:-unknown date})"
   else
     err "Not set up. Run: sudo fawwk setup"; return 1
   fi
@@ -24,7 +24,9 @@ cmd_doctor() {
     [[ $(proxy_image) == "$CADDY_IMAGE" ]] || hint "Fawwk now pins $CADDY_IMAGE. Switch with: sudo fawwk proxy upgrade"
   else err "Caddy proxy is down: fawwk proxy reload"; problems=$((problems + 1)); fi
   if systemctl is-active --quiet fawwk-autodeploy.timer; then ok "Auto-deploy timer is active"; else warn "Auto-deploy timer is off: systemctl enable --now fawwk-autodeploy.timer"; fi
-  command -v nixpacks >/dev/null 2>&1 && ok "Nixpacks installed" || warn "Nixpacks missing (only needed for repos without a Dockerfile)"
+  if command -v railpack >/dev/null 2>&1; then ok "Railpack $(railpack_version) installed"
+  else warn "Railpack missing (builds repos without a Dockerfile): sudo fawwk setup"; fi
+  command -v nixpacks >/dev/null 2>&1 && ok "Nixpacks installed (used by apps pinned to it)"
   if ufw status 2>/dev/null | grep -q 'Status: active'; then ok "Firewall active"; else warn "Firewall (ufw) is inactive"; fi
   [[ -f $LOGROTATE_DIR/fawwk ]] || warn "Fawwk's logs aren't rotated. Fix: sudo fawwk post-update"
   if [[ -n ${NOTIFY_URL-} ]]; then ok "Notifications on (${NOTIFY_ON:-fail})"
@@ -52,6 +54,29 @@ cmd_doctor() {
   dns_report "$DOMAIN"
   hooks_enabled && dns_report "$PANEL_HOST"
   dns_report "fawwk-check-$RANDOM.$DOMAIN"
+
+  if [[ -n $(db_names) ]]; then
+    step "Databases"
+    local db last age
+    while IFS= read -r db; do
+      [[ -z $db ]] && continue
+      db_load "$db"
+      if [[ $D_TYPE == mongodb ]] && mongo_refuses_kernel "$D_IMAGE"; then
+        err "$db: MongoDB $D_VERSION refuses to run on this kernel ($(kernel_version)). Back it up, then move it to --version 7.0 (see: fawwk db --help)"
+        problems=$((problems + 1))
+      fi
+      if [[ $(db_state) == running ]] && db_ready; then ok "$db ($(db_label "$D_TYPE") $D_VERSION) is running"
+      else err "$db isn't answering ($(db_state)). Try: fawwk db restart $db, then: fawwk db logs $db"; problems=$((problems + 1)); fi
+      last=$(db_latest_backup "$db")
+      if [[ -z $last ]]; then warn "$db has never been backed up: fawwk db backup $db"
+      else
+        age=$(( ($(date +%s) - $(date -r "$last" +%s)) / 3600 ))
+        if ((age > 48)) && [[ ${DB_BACKUP_AT:-03:17} != off ]]; then warn "$db's last backup is ${age}h old. Check: journalctl -u fawwk-db-backup.service"
+        else ok "$db last backed up ${age}h ago"; fi
+      fi
+    done < <(db_names)
+    [[ ${DB_BACKUP_AT:-03:17} == off ]] && warn "Daily database backups are off: fawwk db schedule 03:17"
+  fi
 
   step "Apps"
   local n=0 state
