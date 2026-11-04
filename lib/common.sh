@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fawwk — shared helpers: paths, config files, validation, locking.
 
-FAWWK_VERSION="0.2.0"
+FAWWK_VERSION="0.3.0"
 
 # ---------- paths (overridable for testing) ----------
 FAWWK_ETC="${FAWWK_ETC:-/etc/fawwk}"          # config + secrets (root only)
@@ -13,6 +13,7 @@ APPS_VAR="$FAWWK_VAR/apps"
 CADDY_DIR="$FAWWK_ETC/caddy"
 CRON_DIR="${FAWWK_CRON_DIR:-/etc/cron.d}"     # cron jobs: fawwk-<app>
 LOGROTATE_DIR="${FAWWK_LOGROTATE_DIR:-/etc/logrotate.d}"
+SYSTEMD_DIR="${FAWWK_SYSTEMD_DIR:-/etc/systemd/system}"
 FAWWK_NETWORK="fawwk"
 FAWWK_PROXY="fawwk-proxy"
 KEEP_IMAGES="${KEEP_IMAGES:-3}"            # old images kept per app for rollback
@@ -21,6 +22,10 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-90}"     # default seconds a new container get
 # Pinned so a re-run of setup can't silently pull a different proxy. Override to upgrade.
 CADDY_IMAGE="${CADDY_IMAGE:-caddy:2.10.2}"
 CADDY_STATIC_IMAGE="${CADDY_STATIC_IMAGE:-caddy:2.10.2-alpine}"
+# Railpack builds repos that have no Dockerfile (the successor to Nixpacks). setup installs this
+# version; builds use the BuildKit frontend image of the same version, as Railpack recommends.
+RAILPACK_VERSION="${RAILPACK_VERSION:-0.43.0}"
+RAILPACK_FRONTEND="${RAILPACK_FRONTEND:-ghcr.io/railwayapp/railpack-frontend}"
 
 FAWWK_YES=0        # --yes: accept defaults, answer yes, never prompt
 LOCK_NOWAIT=0     # used by auto-deploy: skip apps that are busy instead of waiting
@@ -148,14 +153,14 @@ dns_report6() {
 dns_report() {
   local host=$1 got
   if dns_points_here "$host"; then
-    ok "DNS: $host → $SERVER_IP"
+    ok "DNS: $host → ${SERVER_IP:-this server}"
     dns_report6 "$host"
   else
     got=$(dns_lookup "$host" | tr '\n' ' ')
     if [[ -z $got ]]; then
-      warn "DNS: $host doesn't resolve yet. Add an A record pointing to $SERVER_IP."
+      warn "DNS: $host doesn't resolve yet. Add an A record pointing to ${SERVER_IP:-this server}."
     else
-      warn "DNS: $host → ${got% } (expected $SERVER_IP). Fine if it's behind a proxy like Cloudflare."
+      warn "DNS: $host → ${got% } (expected ${SERVER_IP:-this server}). Fine if it's behind a proxy like Cloudflare."
     fi
   fi
 }

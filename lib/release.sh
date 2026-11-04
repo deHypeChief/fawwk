@@ -33,8 +33,15 @@ app_run_args() {
   [[ -n ${A_CPUS-} ]] && RUN_ARGS+=(--cpus "$A_CPUS")
   for v in ${A_VOLUMES-}; do RUN_ARGS+=(-v "$(volume_name "$A_NAME" "$v"):$v"); done
   if ! is_worker && ! env_has "$envf" PORT; then RUN_ARGS+=(-e "PORT=$A_PORT"); fi
+  # Multi-line values can't go in --env-file: `-e KEY` takes each from app_docker's environment.
+  local k
+  while IFS= read -r k; do RUN_ARGS+=(-e "$k"); done < <(env_ml_keys "$envf")
   return 0
 }
+
+# app_docker ARGS... — docker, with the loaded app's multi-line env values in its environment (for
+# the `-e KEY` flags app_run_args adds). Values never appear on a command line.
+app_docker() { (env_export_multiline "$(app_envfile "$A_NAME")"; exec docker "$@"); }
 
 # Waits until the container answers HTTP on A_PORT (or, for workers, stays up for 10s).
 health_wait() {
@@ -88,7 +95,7 @@ release_command() {
   info "${C_MUTED}\$${C_RESET} $A_RELEASE"
   app_run_args
   printf '\n==> release command: %s\n' "$A_RELEASE" >>"$log"
-  docker run --rm --name "$cname" "${RUN_ARGS[@]}" --entrypoint sh "$image" -c "$A_RELEASE" >>"$log" 2>&1 &
+  app_docker run --rm --name "$cname" "${RUN_ARGS[@]}" --entrypoint sh "$image" -c "$A_RELEASE" >>"$log" 2>&1 &
   local pid=$! t0=$SECONDS
   spin_start "Running" "$log"
   wait "$pid" || rc=$?
@@ -117,7 +124,7 @@ release_image() {
 
   step "Starting new container"
   docker rm -f "$cname" >/dev/null 2>&1 || true
-  if ! docker run -d --name "$cname" --restart unless-stopped --label "fawwk.deploy=$id" \
+  if ! app_docker run -d --name "$cname" --restart unless-stopped --label "fawwk.deploy=$id" \
     --log-opt max-size=10m --log-opt max-file=3 "${RUN_ARGS[@]}" "$image" >/dev/null; then
     err "Docker couldn't start the container."
     return 1
@@ -185,6 +192,8 @@ deploy_app() {
   spin_stop
   subject=$(git_subject)
   ok "Commit ${commit:0:7}: ${subject:0:70}"
+  DEPLOY_STATUS_TOKEN='' DEPLOY_STATUS_HINTED=0
+  deploy_status pending "Deploying on $(hostname)" "$commit"
   env_warn_missing "$(build_context)"
 
   step "Building"
@@ -192,6 +201,7 @@ deploy_app() {
   if ! build_image "$id" "$log"; then
     app_set A_FAILED_COMMIT "$commit"
     history_add "$id" "$commit" - failed "build failed"
+    deploy_status failure "Build failed. Logs: fawwk logs $name --build" "$commit"
     deploy_cleanup
     return 1
   fi
@@ -199,6 +209,7 @@ deploy_app() {
   if ! release_command "$BUILT_IMAGE" "$id" "$log"; then
     app_set A_FAILED_COMMIT "$commit"
     history_add "$id" "$commit" "$BUILT_IMAGE" failed "release command failed"
+    deploy_status failure "Release command failed; the previous version is still live" "$commit"
     docker rmi "$BUILT_IMAGE" >/dev/null 2>&1 || true
     deploy_cleanup
     return 1
@@ -207,6 +218,7 @@ deploy_app() {
   if ! release_image "$BUILT_IMAGE" "$commit" "$id"; then
     app_set A_FAILED_COMMIT "$commit"
     history_add "$id" "$commit" "$BUILT_IMAGE" failed "did not start"
+    deploy_status failure "The new version didn't start; the previous one is still live" "$commit"
     docker rmi "$BUILT_IMAGE" >/dev/null 2>&1 || true
     deploy_cleanup
     return 1
@@ -214,6 +226,7 @@ deploy_app() {
 
   app_set A_FAILED_COMMIT ''
   history_add "$id" "$commit" "$BUILT_IMAGE" ok "${subject:0:60}"
+  deploy_status success "Live$( [[ -n $A_ROUTES ]] && printf ' at %s' "${A_ROUTES%% *}")" "$commit"
   images_prune
   deploy_cleanup
   deploy_summary
