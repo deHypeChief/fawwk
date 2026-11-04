@@ -35,7 +35,7 @@ class HooksTest(unittest.TestCase):
             setattr(hooks, name, d)
         with open(os.path.join(hooks.SECRETS, "app1"), "wb") as f:
             f.write(SECRET + b"\n")
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), hooks.Handler)
+        cls.server = getattr(hooks, "Server", ThreadingHTTPServer)(("127.0.0.1", 0), hooks.Handler)
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -103,6 +103,33 @@ class HooksTest(unittest.TestCase):
         self.assertEqual(c.getresponse().status, 200)
         with open(os.path.join(hooks.CODES, state)) as f:
             self.assertEqual(f.read(), "abc")
+
+    def test_body_limit(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.putrequest("POST", "/hooks/github")
+        c.putheader("Content-Length", str(hooks.MAX_BODY + 1))
+        c.endheaders()
+        self.assertEqual(c.getresponse().status, 413)
+        self.assertEqual(self.jobs(), [])
+
+    def test_connection_cap(self):
+        if not hasattr(hooks, "MAX_CONN"):
+            self.skipTest("no connection cap")
+        idle = [socket.create_connection(("127.0.0.1", self.port)) for _ in range(hooks.MAX_CONN)]
+        try:
+            time.sleep(0.3)
+            extra = socket.create_connection(("127.0.0.1", self.port))
+            extra.settimeout(2)
+            extra.sendall(b"GET /github/installed HTTP/1.0\r\n\r\n")
+            self.assertEqual(extra.recv(1), b"")  # closed straight away, not queued
+            extra.close()
+        finally:
+            for s in idle:
+                s.close()
+        time.sleep(0.5)
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/github/installed")
+        self.assertEqual(c.getresponse().status, 200)  # slots come back once those close
 
     def test_stalled_client_times_out(self):
         self.assertTrue(0 < hooks.Handler.timeout <= 60)

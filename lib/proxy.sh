@@ -59,8 +59,9 @@ proxy_render() (
   printf 'import /etc/caddy/custom/*.caddy\n\n'
 
   # GitHub webhooks and the one-click GitHub App setup, handled by the fawwk-hooks container.
+  # Oversized bodies are cut off here, before they reach it (same limit as MAX_BODY in hooks.py).
   if [[ -n ${PANEL_HOST-} && -f $FAWWK_ETC/hooks.enabled ]]; then
-    printf '%s {\n\tencode zstd gzip\n\t@hooks path /hooks/* /github/*\n\thandle @hooks {\n\t\treverse_proxy fawwk-hooks:8000\n\t}\n\thandle {\n\t\trespond "Fawwk" 404\n\t}\n}\n\n' "$PANEL_HOST"
+    printf '%s {\n\tencode zstd gzip\n\t@hooks path /hooks/* /github/*\n\thandle @hooks {\n\t\trequest_body {\n\t\t\tmax_size 4MiB\n\t\t}\n\t\treverse_proxy fawwk-hooks:8000\n\t}\n\thandle {\n\t\trespond "Fawwk" 404\n\t}\n}\n\n' "$PANEL_HOST"
   fi
 
   ((${#rows[@]})) || exit 0

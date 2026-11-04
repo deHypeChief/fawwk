@@ -12,8 +12,8 @@ GH_ETC="$FAWWK_ETC/github"
 HOOKS_DIR="$FAWWK_VAR/hooks"
 HOOKS_CONTAINER="fawwk-hooks"
 HOOKS_IMAGE="python:3.12-alpine"
-# Bump when the receiver's `docker run` settings change, so hooks_ensure recreates old containers.
-HOOKS_REV=2
+HOOKS_UID=65534   # "nobody": the receiver never runs as root, even inside its container
+HOOKS_REV=2       # bump when hooks_container_start's run options change; older containers get recreated
 GH_API="https://api.github.com"
 
 gh_sources() {
@@ -106,31 +106,51 @@ hooks_enabled() { [[ -f $FAWWK_ETC/hooks.enabled ]]; }
 
 # Starts the fawwk-hooks container, routes panel.<domain> to it, and installs the systemd units
 # that turn queued push jobs into deploys.
-hooks_ensure() {
-  [[ -n ${PANEL_HOST-} ]] || die "No panel domain configured. Re-run: sudo fawwk setup"
+# The receiver's folders. $HOOKS_DIR itself stays root-only (700), so although the folders inside
+# belong to the receiver's user, no other user on the host can reach them.
+hooks_dirs() {
   mkdir -p "$HOOKS_DIR"/{secrets,pages,codes,inbox}
   chmod 700 "$HOOKS_DIR" "$HOOKS_DIR/secrets"
+  chown -R "$HOOKS_UID:$HOOKS_UID" "$HOOKS_DIR"/{secrets,pages,codes,inbox}
+}
+
+# 0 if the receiver container exists and was created with the current run options.
+hooks_container_current() {
+  [[ $(docker inspect -f '{{index .Config.Labels "fawwk.hooks"}}' "$HOOKS_CONTAINER" 2>/dev/null) == "$HOOKS_REV" ]]
+}
+
+# (Re)creates the receiver container. It's internet-facing, so it gets as little as possible: no root,
+# no capabilities, no privilege escalation, a read-only filesystem, and caps on memory and processes.
+# On failure prints Docker's error and returns 1.
+hooks_container_start() {
+  local out
+  hooks_dirs
+  docker rm -f "$HOOKS_CONTAINER" >/dev/null 2>&1 || true
+  # Pull separately and quietly so Docker's progress output doesn't break the screen.
+  docker image inspect "$HOOKS_IMAGE" >/dev/null 2>&1 || docker pull -q "$HOOKS_IMAGE" >/dev/null 2>&1 || true
+  out=$(docker run -d --name "$HOOKS_CONTAINER" --network "$FAWWK_NETWORK" --restart unless-stopped \
+    --label "fawwk.hooks=$HOOKS_REV" --user "$HOOKS_UID:$HOOKS_UID" \
+    --read-only --tmpfs /tmp --memory 64m --pids-limit 64 \
+    --cap-drop ALL --security-opt no-new-privileges \
+    -v "$FAWWK_HOME/lib/hooks.py:/app/hooks.py:ro" \
+    -v "$HOOKS_DIR/secrets:/secrets:ro" -v "$HOOKS_DIR/pages:/pages:ro" \
+    -v "$HOOKS_DIR/codes:/codes" -v "$HOOKS_DIR/inbox:/inbox" \
+    --log-opt max-size=10m --log-opt max-file=3 \
+    "$HOOKS_IMAGE" python -u /app/hooks.py 2>&1) || { printf '%s\n' "$out"; return 1; }
+}
+
+hooks_ensure() {
+  [[ -n ${PANEL_HOST-} ]] || die "No panel domain configured. Re-run: sudo fawwk setup"
   touch "$FAWWK_ETC/hooks.enabled"
-  if docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1 &&
-    [[ $(docker inspect -f '{{index .Config.Labels "fawwk.rev"}}' "$HOOKS_CONTAINER" 2>/dev/null) != "$HOOKS_REV" ]]; then
-    docker rm -f "$HOOKS_CONTAINER" >/dev/null 2>&1 || true   # older settings: recreate below
-  fi
-  if ! docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1; then
+  if ! hooks_container_current; then
+    # Missing, or created by an older Fawwk with weaker settings.
     spin_start "Starting the webhook receiver"
     local out
-    # Pull separately and quietly so Docker's progress output doesn't break the screen.
-    docker image inspect "$HOOKS_IMAGE" >/dev/null 2>&1 || docker pull -q "$HOOKS_IMAGE" >/dev/null 2>&1 || true
-    out=$(docker run -d --name "$HOOKS_CONTAINER" --network "$FAWWK_NETWORK" --restart unless-stopped \
-      --read-only --tmpfs /tmp --memory 64m --cap-drop ALL \
-      --security-opt no-new-privileges:true --pids-limit 64 --label "fawwk.rev=$HOOKS_REV" \
-      -v "$FAWWK_HOME/lib/hooks.py:/app/hooks.py:ro" \
-      -v "$HOOKS_DIR/secrets:/secrets:ro" -v "$HOOKS_DIR/pages:/pages:ro" \
-      -v "$HOOKS_DIR/codes:/codes" -v "$HOOKS_DIR/inbox:/inbox" \
-      --log-opt max-size=10m --log-opt max-file=3 \
-      "$HOOKS_IMAGE" python -u /app/hooks.py 2>&1) || { spin_stop; err "Couldn't start the webhook receiver:"; printf '%s\n' "$out" | tail -n 5 | ui_quote; die "Check Docker, then run this again."; }
+    out=$(hooks_container_start) || { spin_stop; err "Couldn't start the webhook receiver:"; printf '%s\n' "$out" | tail -n 5 | ui_quote; die "Check Docker, then run this again."; }
     spin_stop
-  elif [[ $(docker inspect -f '{{.State.Running}}' "$HOOKS_CONTAINER" 2>/dev/null) != true ]]; then
-    docker start "$HOOKS_CONTAINER" >/dev/null
+  else
+    hooks_dirs
+    [[ $(docker inspect -f '{{.State.Running}}' "$HOOKS_CONTAINER" 2>/dev/null) == true ]] || docker start "$HOOKS_CONTAINER" >/dev/null
   fi
   ok "Webhook receiver running ($HOOKS_CONTAINER)"
 
@@ -331,6 +351,7 @@ EOF
   (umask 077
     jq -r '.pem' <<<"$resp" >"$d/key.pem"
     jq -r '.webhook_secret' <<<"$resp" >"$HOOKS_DIR/secrets/$slug")
+  chown "$HOOKS_UID:$HOOKS_UID" "$HOOKS_DIR/secrets/$slug"   # the receiver checks signatures with it
   conf_set "$d/app.conf" GH_APP_ID "$(jq -r '.id' <<<"$resp")"
   conf_set "$d/app.conf" GH_SLUG "$slug"
   conf_set "$d/app.conf" GH_OWNER "$(jq -r '.owner.login' <<<"$resp")"

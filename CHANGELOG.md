@@ -54,8 +54,11 @@ sudo fawwk proxy upgrade   # optional: move the proxy to the pinned Caddy image 
 ### Hardening and housekeeping
 
 - App containers run with `no-new-privileges` and a process limit.
-- Webhook receiver: drops connections that stall for 15s, queues each GitHub delivery once, and runs
-  with `no-new-privileges` and a process limit (recreated automatically on update).
+- Webhook receiver ([#1](https://github.com/deHypeChief/fawwk/pull/1)): runs as `nobody` with
+  `no-new-privileges` and a process limit, drops connections that stall for 10s, handles at most 8
+  requests at once, caps bodies at 4 MiB (also enforced by Caddy), and no longer rejects every webhook
+  when one secret file is unreadable. It's recreated automatically after an update.
+- Webhook receiver: each GitHub delivery is queued once, even when GitHub retries or redelivers it.
 - The Caddy images are pinned (`caddy:2.10.2`, `caddy:2.10.2-alpine`).
 - Disk use stays flat: old build logs, untagged layers and week-old build cache are removed after each
   deploy; Fawwk's logs rotate weekly; fresh Docker installs cap container logs and the build cache.
