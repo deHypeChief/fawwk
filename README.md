@@ -200,8 +200,11 @@ fawwk db remove shop
   can reach it.
 - `--link` (or `fawwk db link`) sets the connection URL on an app: `DATABASE_URL` for Postgres,
   `REDIS_URL` for Redis, `MONGODB_URL` for MongoDB (`--as NAME` to pick another), then offers a restart.
-- Versions: Postgres 17, Redis 7 and MongoDB 8 by default; pick another major with `--version 16`.
-  MongoDB 5 and later need a CPU with AVX, which some older or emulated VPS CPUs lack.
+- Versions: Postgres 17, Redis 7 and MongoDB 7.0 by default; pick another with `--version 16`.
+- MongoDB 8 builds refuse to start on Linux kernel 6.19 and newer (MongoDB issue SERVER-121912), so
+  MongoDB defaults to 7.0. If you pick an 8.x version, Fawwk checks it against the kernel before
+  starting it, and `doctor` warns if a kernel upgrade would stop one. MongoDB 5 and later also need a
+  CPU with AVX, which some older or emulated VPS CPUs lack.
 - Backups are logical (`pg_dump`, a Redis snapshot, `mongodump`) in `/var/lib/fawwk/backups/<name>/`.
   The nightly ones keep the last 7 (`DB_KEEP_BACKUPS`); ones you make by hand stay until you delete them.
   A failed nightly backup sends a notification (`fawwk notify`).

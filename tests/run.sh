@@ -798,10 +798,12 @@ test_db_real_docker() {
   add_app api A_STATE=new
   FAWWK_YES=1
   local sfx=$RANDOM
-  DB_TEST_NAMES="pg$sfx rd$sfx mg$sfx"
+  DB_TEST_NAMES="pg$sfx rd$sfx mg$sfx mx$sfx"
   # On the way out (pass or fail): what each database container was doing, then clean up. The harness
   # only shows a test's output when it fails, so this explains failures in CI without noise otherwise.
-  trap 'for n in $DB_TEST_NAMES; do
+  # (set +e: a cleanup step that fails, e.g. logs of a container that was rightly never created, must
+  # not turn a passing test into a failure.)
+  trap 'set +e; for n in $DB_TEST_NAMES; do
       docker ps -a --filter "name=^fawwk-db-$n\$" --format "      container {{.Names}}: {{.Status}}"
       docker logs --tail 15 "fawwk-db-$n" 2>&1 | sed "s/^/        /"
       docker rm -f "fawwk-db-$n" "fawwk-db-$n-restore" >/dev/null 2>&1; docker volume rm "fawwk_db_$n" >/dev/null 2>&1
@@ -843,6 +845,17 @@ test_db_real_docker() {
   else
     echo "MongoDB part skipped (CPU without AVX)"
   fi
+  # MongoDB builds that refuse kernel 6.19+ are caught before they're started, with versions that work.
+  if docker image inspect mongo:8.3 >/dev/null 2>&1 || docker pull -q mongo:8.3 >/dev/null 2>&1; then
+    FAWWK_KERNEL=6.19.2 mongo_refuses_kernel mongo:8.3
+    FAWWK_KERNEL=6.18.9 no mongo_refuses_kernel mongo:8.3   # older kernels are fine
+    local out
+    out=$( (FAWWK_KERNEL=6.20.0 db_create "mx$sfx" --type mongodb --version 8.3) 2>&1) && return 1
+    has "$out" "won't run on this server's Linux kernel (6.20)"; has "$out" '--version 7.0'
+    [[ ! -d $FAWWK_ETC/dbs/mx$sfx ]]
+  fi
+  FAWWK_KERNEL=6.20.0 no mongo_refuses_kernel "$(db_image_for mongodb "$(db_default_version mongodb)")"
+
   # Nothing secret on the containers' command lines.
   local cmdlines
   cmdlines=$(docker inspect -f '{{.Config.Cmd}} {{.Args}}' "fawwk-db-pg$sfx" "fawwk-db-rd$sfx")
