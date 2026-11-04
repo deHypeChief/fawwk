@@ -61,6 +61,10 @@ cmd_doctor() {
     while IFS= read -r db; do
       [[ -z $db ]] && continue
       db_load "$db"
+      if [[ $D_TYPE == mongodb ]] && mongo_refuses_kernel "$D_IMAGE"; then
+        err "$db: MongoDB $D_VERSION refuses to run on this kernel ($(kernel_version)). Back it up, then move it to --version 7.0 (see: fawwk db --help)"
+        problems=$((problems + 1))
+      fi
       if [[ $(db_state) == running ]] && db_ready; then ok "$db ($(db_label "$D_TYPE") $D_VERSION) is running"
       else err "$db isn't answering ($(db_state)). Try: fawwk db restart $db, then: fawwk db logs $db"; problems=$((problems + 1)); fi
       last=$(db_latest_backup "$db")

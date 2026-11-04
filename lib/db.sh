@@ -40,7 +40,25 @@ db_load() {
 db_set() { conf_set "$DBS_ETC/$D_NAME/db.conf" "$1" "$2"; printf -v "$1" '%s' "$2"; }
 
 # ---------- per-type details ----------
-db_default_version() { case $1 in postgres) echo 17 ;; redis) echo 7 ;; mongodb) echo 8 ;; esac; }
+# MongoDB defaults to 7.0. MongoDB 8 builds (8.0.x and 8.3.x so far) refuse to start on Linux kernel
+# 6.19 and newer (MongoDB issue SERVER-121912), and its patch releases have been adding that refusal,
+# so a floating 8.x tag could stop working on new kernels. 7.0 doesn't have the problem.
+db_default_version() { case $1 in postgres) echo 17 ;; redis) echo 7 ;; mongodb) echo 7.0 ;; esac; }
+
+# The running kernel as MAJOR.MINOR (FAWWK_KERNEL overrides it, for tests).
+kernel_version() { local k=${FAWWK_KERNEL:-$(uname -r)}; [[ $k =~ ^([0-9]+)\.([0-9]+) ]] && printf '%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; }
+
+# kernel_at_least X.Y — 0 when the running kernel is X.Y or newer.
+kernel_at_least() { [[ $(printf '%s\n%s\n' "$1" "$(kernel_version)" | sort -V | head -n1) == "$1" ]]; }
+
+# mongo_refuses_kernel IMAGE — 0 when that MongoDB build refuses to run on this kernel. The refusal
+# is compiled into mongod with its message, so look for it instead of keeping a list of versions.
+mongo_refuses_kernel() {
+  kernel_at_least 6.19 || return 1
+  local hits
+  hits=$(docker run --rm --network none --entrypoint sh "$1" -c 'grep -c "kernel versions 6.19" "$(command -v mongod)"' 2>/dev/null || true)
+  ((${hits:-0} > 0))
+}
 db_image_for() {
   case $1 in
     postgres) printf 'postgres:%s-alpine' "$2" ;;
@@ -313,7 +331,7 @@ Usage: sudo fawwk db [command]
   (none) | list                     Databases, state and last backup
   create <name> [options]           Start a new database
       --type postgres|redis|mongodb   (default: postgres)
-      --version <v>                   e.g. 16 for Postgres 16 (default: 17, Redis 7, MongoDB 8)
+      --version <v>                   e.g. 16 for Postgres 16 (default: 17, Redis 7, MongoDB 7.0)
       --memory <size>                 memory limit, e.g. 512m
       --link <app> [--as VAR]         give an app its URL (default var: DATABASE_URL,
                                       REDIS_URL or MONGODB_URL)
@@ -427,6 +445,10 @@ db_create() {
   docker image inspect "$D_IMAGE" >/dev/null 2>&1 || docker pull -q "$D_IMAGE" >/dev/null 2>&1 || {
     spin_stop; rm -rf "$d"; die "Couldn't pull $D_IMAGE. Check the version exists."; }
   spin_stop
+  if [[ $type == mongodb ]] && mongo_refuses_kernel "$D_IMAGE"; then
+    rm -rf "$d"
+    die "MongoDB $version won't run on this server's Linux kernel ($(kernel_version)): it refuses kernel 6.19 and newer (MongoDB issue SERVER-121912). Use a version that does: --version 7.0"
+  fi
   spin_start "Starting it"
   if ! db_run || ! db_wait_ready 120; then
     spin_stop
@@ -434,7 +456,11 @@ db_create() {
     docker logs --tail 20 "$(db_container "$name")" 2>&1 | ui_quote
     info "Container: $(docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$(db_container "$name")" 2>&1)"
     info "Readiness check said: $(db_ready_output 2>&1 | tail -n 3 | tr '\n' ' ')"
-    [[ $type == mongodb ]] && hint "MongoDB 5+ needs a CPU with AVX. Older or emulated CPUs: try --version 4.4"
+    # MongoDB 5+ dies with an illegal instruction (exit 132) on CPUs without AVX.
+    if [[ $type == mongodb ]] && { [[ $(docker inspect -f '{{.State.ExitCode}}' "$(db_container "$name")" 2>/dev/null) == 132 ]] ||
+      docker logs --tail 50 "$(db_container "$name")" 2>&1 | grep -qiE 'illegal instruction|AVX'; }; then
+      hint "This CPU lacks AVX, which MongoDB 5 and newer need. Try: --version 4.4"
+    fi
     docker rm -f "$(db_container "$name")" >/dev/null 2>&1 || true
     docker volume rm "$(db_volume "$name")" >/dev/null 2>&1 || true
     rm -rf "$d"

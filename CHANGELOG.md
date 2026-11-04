@@ -21,6 +21,9 @@ commits, a GitHub App connected before 0.3 needs one extra permission (see below
   - **Backups:** nightly at 03:17 (`fawwk db schedule HH:MM|off`), keeping the last 7
     (`DB_KEEP_BACKUPS`); `fawwk db backup <name>` on demand. They're logical (`pg_dump`, a Redis
     snapshot, `mongodump`), and a failed nightly backup sends a notification.
+  - **Versions:** Postgres 17, Redis 7, MongoDB 7.0 by default (`--version` picks another). MongoDB 8
+    builds refuse to start on Linux kernel 6.19+ (SERVER-121912), so Fawwk checks an 8.x choice
+    against the kernel before starting it, and `doctor` flags one a kernel upgrade would stop.
   - **Restore:** `fawwk db restore <name> <file|latest>` replaces the contents exactly, after taking a
     safety backup.
   - **Integration:** `fawwk backup --with-data` includes a fresh backup of every database, `restore`
