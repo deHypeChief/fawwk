@@ -12,6 +12,12 @@ Routes:
 
 Mounts: /secrets (ro: one file per GitHub App with its webhook secret), /pages (ro: setup pages),
         /codes (rw: manifest codes for the CLI), /inbox (rw: push jobs for the host).
+
+It's reachable from the internet, so it limits what one client can tie up: each connection gets
+TIMEOUT seconds of socket inactivity, at most MAX_CONN requests run at once (extra connections are
+closed straight away), and bodies over MAX_BODY are refused. Worst case that's MAX_CONN * MAX_BODY
+of request bodies in memory, well inside the container's 64 MB. A push GitHub couldn't deliver
+is still deployed within a minute by the auto-deploy timer.
 """
 
 import hashlib
@@ -19,6 +25,7 @@ import hmac
 import json
 import os
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -26,7 +33,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 SECRETS, PAGES, CODES, INBOX = "/secrets", "/pages", "/codes", "/inbox"
-MAX_BODY = 10 * 1024 * 1024
+MAX_BODY = 4 * 1024 * 1024  # push payloads are far smaller; keep in step with the Caddy limit in proxy.sh
+MAX_CONN = 8
+TIMEOUT = 10
 STATE_RE = re.compile(r"^[a-f0-9]{32}$")
 DELIVERY_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
@@ -64,22 +73,32 @@ def write_atomic(directory, name, data):
 def secrets():
     out = []
     try:
-        for name in os.listdir(SECRETS):
+        names = os.listdir(SECRETS)
+    except OSError:
+        return out
+    for name in names:
+        # One unreadable file (e.g. still owned by root) mustn't lock out every other GitHub App.
+        try:
             with open(os.path.join(SECRETS, name)) as f:
                 s = f.read().strip()
-            if s:
-                out.append(s.encode())
-    except OSError:
-        pass
+        except OSError as e:
+            print("can't read webhook secret %s: %s" % (name, e.strerror), flush=True)
+            continue
+        if s:
+            out.append(s.encode())
     return out
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "fawwk-hooks"
-    timeout = 15  # seconds a client may stall; frees the thread of a slow or dead connection
+    # Socket timeout for every read and write: a client that goes quiet (slowloris) is dropped
+    # instead of holding a thread forever. BaseHTTPRequestHandler catches it and closes the connection.
+    timeout = TIMEOUT
 
     def log_message(self, fmt, *args):
-        print("%s %s" % (self.address_string(), fmt % args), flush=True)
+        # One write per line, so lines from concurrent requests don't run together.
+        sys.stdout.write("%s %s\n" % (self.address_string(), fmt % args))
+        sys.stdout.flush()
 
     def reply(self, code, body, ctype="text/plain; charset=utf-8"):
         data = body.encode()
@@ -160,8 +179,32 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(202, "Queued\n")
 
 
+class Server(ThreadingHTTPServer):
+    """A thread per request, but never more than MAX_CONN at once."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.slots = threading.BoundedSemaphore(MAX_CONN)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 if __name__ == "__main__":
     for d in (CODES, INBOX):
         os.makedirs(d, exist_ok=True)
     print("fawwk-hooks listening on :8000", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+    Server(("0.0.0.0", 8000), Handler).serve_forever()

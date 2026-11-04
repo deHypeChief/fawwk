@@ -283,7 +283,8 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
   won't work. They're only reachable through Caddy and are never published on a host port.
 - Env vars are passed to the build by default (Next.js `NEXT_PUBLIC_*` and similar need them), which
   bakes them into the locally stored image. Limit that with `fawwk buildenv <app> KEY,KEY` or `none`.
-- The webhook receiver runs in its own read-only container with no capabilities. It only checks
+- The webhook receiver runs as `nobody` in its own read-only container with no capabilities, and limits
+  what one client can tie up: 10s socket timeout, 8 requests at once, 4 MiB bodies. It only checks
   signatures and queues jobs: it has no access to Docker, app secrets or the shell.
 - Docker-published ports bypass UFW. Fawwk only publishes 80 and 443 (the proxy). If you run other
   containers with `-p`, UFW won't protect those ports.
