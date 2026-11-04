@@ -10,6 +10,13 @@ sudo fawwk post-update     # once: 0.1's updater doesn't know this step yet
 sudo fawwk proxy upgrade   # optional: move the proxy to the pinned Caddy image (a few seconds' pause)
 ```
 
+If `fawwk update` says `Not possible to fast-forward` (servers installed before `main`'s history was
+rewritten on 2026-11-04), update by hand once, then continue with `post-update`:
+
+```bash
+sudo git -C /opt/fawwk fetch origin main && sudo git -C /opt/fawwk reset --hard FETCH_HEAD
+```
+
 ### New
 
 - **Volumes:** `fawwk volume <app> add /app/data` keeps a folder across deploys, restarts and rollbacks.
@@ -29,8 +36,14 @@ sudo fawwk proxy upgrade   # optional: move the proxy to the pinned Caddy image 
 - `--json` for `list`, `info` and `history`.
 - `create` flags: `--volume`, `--release`, `--memory`, `--cpus`, `--token-user`.
 - `fawwk version` shows the git commit too.
+- `fawwk update --branch <branch>` tries another branch (e.g. a pull request) and switches back.
 
 ### Fixed
+
+- `fawwk update` (and re-running `install.sh`) failed with "Not possible to fast-forward" once the
+  published branch's history had been rewritten. Updates now follow the branch whatever its history,
+  after saving a copy of any local edits to Fawwk's files and asking before discarding them.
+- `fawwk doctor` said "Everything looks good" right after printing warnings (e.g. DNS not set up).
 
 - A webhook and the every-minute timer could deploy the same push twice. App state is now re-read
   after taking the app's lock, and an automated deploy is skipped if the app is already at that commit.

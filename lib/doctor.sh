@@ -26,7 +26,7 @@ cmd_doctor() {
   if systemctl is-active --quiet fawwk-autodeploy.timer; then ok "Auto-deploy timer is active"; else warn "Auto-deploy timer is off: systemctl enable --now fawwk-autodeploy.timer"; fi
   command -v nixpacks >/dev/null 2>&1 && ok "Nixpacks installed" || warn "Nixpacks missing (only needed for repos without a Dockerfile)"
   if ufw status 2>/dev/null | grep -q 'Status: active'; then ok "Firewall active"; else warn "Firewall (ufw) is inactive"; fi
-  [[ -f /etc/logrotate.d/fawwk ]] || warn "Fawwk's logs aren't rotated. Fix: sudo fawwk post-update"
+  [[ -f $LOGROTATE_DIR/fawwk ]] || warn "Fawwk's logs aren't rotated. Fix: sudo fawwk post-update"
   if [[ -n ${NOTIFY_URL-} ]]; then ok "Notifications on (${NOTIFY_ON:-fail})"
   else hint "You won't hear about failed auto-deploys. Turn on notifications: fawwk notify <webhook-url>"; fi
 
@@ -79,5 +79,6 @@ cmd_doctor() {
   printf '\n' >&2
   UI_IN_STEP=0
   if ((problems)); then err "$problems problem(s) found"; FAWWK_DIED=1; exit 1; fi
-  ok "Everything looks good"
+  if ((UI_WARNINGS)); then warn "No problems, but $UI_WARNINGS warning(s) above"
+  else ok "Everything looks good"; fi
 }

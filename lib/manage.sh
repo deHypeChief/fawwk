@@ -538,12 +538,58 @@ cmd_proxy() {
 }
 
 # ---------- self update ----------
+update_usage() {
+  cat <<'EOF'
+Usage: sudo fawwk update [--branch <branch>]
+
+Updates Fawwk to the latest commit of the branch it's on (main unless you picked another).
+--branch switches to another branch, e.g. to try a pull request before it's merged:
+  sudo fawwk update --branch some-feature      and back:  sudo fawwk update --branch main
+EOF
+}
+
 cmd_update() {
+  local branch=''
+  while (($#)); do
+    case $1 in
+      --branch) need_arg "$@"; branch=$2; shift 2 ;;
+      -h | --help) update_usage; return 0 ;;
+      *) die "Unknown option: $1 (see: fawwk update --help)" ;;
+    esac
+  done
   require_root update
   [[ -d $FAWWK_HOME/.git ]] || die "Fawwk at $FAWWK_HOME wasn't installed from git. Re-run install.sh from a new copy."
-  local before
+  local g=(git -C "$FAWWK_HOME") before dirty new depth=()
   before=$(fawwk_version)
-  git -C "$FAWWK_HOME" pull --ff-only || die "Update failed."
+  branch=${branch:-$("${g[@]}" symbolic-ref --short -q HEAD || echo main)}
+
+  # Edits made to Fawwk's own files on this server would be lost: keep a copy and ask first.
+  dirty=$("${g[@]}" -c core.fileMode=false status --porcelain --untracked-files=no)
+  if [[ -n $dirty ]]; then
+    local patch
+    patch="$FAWWK_VAR/fawwk-local-changes-$(date +%Y%m%d-%H%M%S).patch"
+    mkdir -p "$FAWWK_VAR"
+    "${g[@]}" -c core.fileMode=false diff HEAD >"$patch"
+    warn "Fawwk's own files in $FAWWK_HOME were changed on this server:"
+    printf '%s\n' "$dirty" | ui_quote
+    info "A copy of the changes is saved in $patch"
+    confirm "Discard them and update?" N || die "Update cancelled. Nothing was changed."
+  fi
+
+  spin_start "Fetching $branch"
+  [[ $("${g[@]}" rev-parse --is-shallow-repository 2>/dev/null) == true ]] && depth=(--depth 1)
+  if ! "${g[@]}" fetch -q "${depth[@]}" origin "$branch" 2>"$FAWWK_VAR/update.err"; then
+    spin_stop
+    tail -n 3 "$FAWWK_VAR/update.err" | ui_quote
+    die "Couldn't fetch '$branch' from $("${g[@]}" remote get-url origin 2>/dev/null)."
+  fi
+  spin_stop
+  rm -f "$FAWWK_VAR/update.err"
+  new=$("${g[@]}" rev-parse FETCH_HEAD)
+  # Not `git pull --ff-only`: this folder is a copy of the published branch, so follow it even when
+  # its history was rewritten upstream (a force-push), which a fast-forward can't do.
+  "${g[@]}" checkout -q -f -B "$branch" "$new"
+  "${g[@]}" branch -q --set-upstream-to="origin/$branch" "$branch" 2>/dev/null || true
   chmod +x "$FAWWK_HOME/bin/fawwk" "$FAWWK_HOME/lib/askpass.sh"
   # Finish with the new code: it knows what the new version needs on the server.
   exec "$FAWWK_HOME/bin/fawwk" post-update "$before"

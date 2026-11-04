@@ -153,7 +153,7 @@ cmd_uninstall() {
   systemctl disable --now fawwk-autodeploy.timer fawwk-hooks.path >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/fawwk-autodeploy.{service,timer} /etc/systemd/system/fawwk-hooks.{service,path}
   systemctl daemon-reload >/dev/null 2>&1 || true
-  rm -f "$CRON_DIR"/fawwk-* /etc/logrotate.d/fawwk
+  rm -f "$CRON_DIR"/fawwk-* "$LOGROTATE_DIR/fawwk"
   ok "Timers, webhook watcher and cron jobs removed"
   if command -v docker >/dev/null 2>&1; then
     docker ps -aq --filter label=fawwk.app | xargs -r docker rm -f >/dev/null 2>&1 || true

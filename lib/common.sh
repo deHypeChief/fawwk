@@ -12,6 +12,7 @@ APPS_ETC="$FAWWK_ETC/apps"
 APPS_VAR="$FAWWK_VAR/apps"
 CADDY_DIR="$FAWWK_ETC/caddy"
 CRON_DIR="${FAWWK_CRON_DIR:-/etc/cron.d}"     # cron jobs: fawwk-<app>
+LOGROTATE_DIR="${FAWWK_LOGROTATE_DIR:-/etc/logrotate.d}"
 FAWWK_NETWORK="fawwk"
 FAWWK_PROXY="fawwk-proxy"
 KEEP_IMAGES="${KEEP_IMAGES:-3}"            # old images kept per app for rollback

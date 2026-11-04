@@ -239,6 +239,7 @@ fawwk cleanup                       # old images and build logs, untagged layers
 fawwk backup [file] [--with-data]   # settings, apps, env vars, keys, GitHub connections, certificates
 fawwk restore backup.tar.gz         # on a new server, then: fawwk setup --yes && fawwk deploy --all
 fawwk update                        # update Fawwk (also refreshes timers, log rotation, webhooks)
+fawwk update --branch <branch>      # try another branch, e.g. a pull request; --branch main to go back
 fawwk uninstall [--delete-data]     # remove Fawwk and its apps; Docker stays
 ```
 
