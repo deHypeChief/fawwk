@@ -383,10 +383,18 @@ cmd_autodeploy() {
 
 # Called by the systemd timer every minute. Deploys apps whose branch has a new commit.
 cmd_sync() {
-  local quiet=0 name
+  local quiet=0 name out
   [[ ${1-} == --quiet || ${1-} == -q ]] && quiet=1
   require_root sync; require_setup
   mkdir -p "$FAWWK_LOG"
+  # After `fawwk update`, bring a webhook receiver started by an older Fawwk up to the current settings.
+  if hooks_enabled && docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1 && ! hooks_container_current; then
+    if out=$(hooks_container_start); then
+      printf '[%s] webhook receiver recreated with current settings\n' "$(ts)" >>"$FAWWK_LOG/sync.log"
+    else
+      printf '[%s] webhook receiver: recreate FAILED: %s\n' "$(ts)" "$(tail -n 1 <<<"$out")" >>"$FAWWK_LOG/sync.log"
+    fi
+  fi
   while IFS= read -r name; do
     [[ -z $name ]] && continue
     (
