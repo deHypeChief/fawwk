@@ -31,6 +31,14 @@ cmd_doctor() {
   mem=$(free -m | awk '/^Mem:/ {printf "%d/%dMB", $3, $2}' || true)
   ok "Memory $mem used"
 
+  if hooks_enabled; then
+    if [[ $(docker inspect -f '{{.State.Running}}' "$HOOKS_CONTAINER" 2>/dev/null) == true ]]; then ok "Webhook receiver is running"
+    else err "Webhook receiver is down: sudo fawwk github connect (or docker start $HOOKS_CONTAINER)"; problems=$((problems + 1)); fi
+    systemctl is-active --quiet fawwk-hooks.path && ok "Webhook deploys are active" || warn "Webhook watcher is off: systemctl enable --now fawwk-hooks.path"
+    local src
+    while IFS= read -r src; do [[ -n $src ]] && ok "GitHub App: $src"; done < <(gh_sources)
+  fi
+
   step "DNS"
   dns_report "$DOMAIN"
   dns_report "fawwk-check-$RANDOM.$DOMAIN"

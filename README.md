@@ -30,8 +30,9 @@ git push              # redeploys automatically within a minute
   with [Nixpacks](https://nixpacks.com).
 - **Zero-downtime deploys:** the new container must answer HTTP on its port before traffic moves to it.
   If it fails, the old version stays live and the error plus logs are shown.
-- **Auto-deploy:** a systemd timer polls each repo's branch every minute. There are no webhooks, so
-  nothing extra is exposed. A commit that failed to deploy isn't retried until you push again.
+- **Auto-deploy:** with GitHub connected (below), every push deploys within seconds through a webhook.
+  A systemd timer also checks each repo's branch every minute, for other git hosts and as a backup.
+  A commit that failed to deploy isn't retried until you push again.
 
 ## Install
 
@@ -62,6 +63,31 @@ A    *.example.com   <server ip>
 
 With the wildcard record in place, every new app subdomain works without touching DNS again.
 
+## Connect GitHub (recommended)
+
+```bash
+sudo fawwk github connect            # your account
+sudo fawwk github connect --org acme # or an organization
+```
+
+This creates a private **GitHub App** owned by you, in one click: open the link Fawwk prints, click
+**Create GitHub App**, then choose which repos it may access and click **Install**. After that:
+
+- Repos with the app installed need no deploy keys or tokens. Fawwk gets a 1-hour, read-only token for
+  one repo each time it fetches code.
+- Every push deploys within seconds. GitHub sends a signed webhook to `https://panel.<domain>/hooks/github`.
+- Several GitHub accounts or orgs? Run `connect` once for each (log in to the other account first).
+
+```bash
+fawwk github                 # connected accounts and the repos each can reach
+fawwk github install         # add or remove repos
+fawwk github remove <name>   # forget a connection
+```
+
+It needs `panel.<domain>` to point to this server (the wildcard DNS record covers it). Webhooks are
+received by a small, locked-down container (`fawwk-hooks`) that only checks signatures and queues jobs;
+the deploy itself runs on the host.
+
 ## Deploy an app
 
 ```bash
@@ -70,8 +96,9 @@ sudo fawwk create
 
 The guided flow asks for:
 
-1. **Repo:** `https://github.com/you/app` or just `you/app`. For a private repo, Fawwk generates a
-   read-only **deploy key** for you to paste into GitHub (recommended), or takes a personal access token.
+1. **Repo:** `https://github.com/you/app` or just `you/app`. If the connected GitHub App is installed on
+   it, that's all. Otherwise, for a private repo, Fawwk offers to connect GitHub, a read-only **deploy
+   key** for you to paste into GitHub, or a personal access token.
 2. **Branch:** defaults to the repo's default branch.
 3. **Folder:** for monorepos, e.g. `apps/web`.
 4. **Domains:** `app.example.com`, `example.com`, `example.com/api`, several at once, or `none` for a
@@ -145,9 +172,11 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 | `/opt/fawwk` | Fawwk itself (`/usr/local/bin/fawwk` links here) |
 | `/etc/fawwk/fawwk.conf` | server settings from `setup` |
 | `/etc/fawwk/apps/<app>/` | `app.conf`, `env`, deploy key or token, `history` (root-only, mode 600) |
+| `/etc/fawwk/github/<app-slug>/` | connected GitHub Apps: `app.conf` and private key (root-only) |
+| `/var/lib/fawwk/hooks/` | webhook secrets and the queue of push events |
 | `/etc/fawwk/caddy/Caddyfile` | generated proxy config; add your own blocks in `custom/*.caddy` |
 | `/var/lib/fawwk/apps/<app>/` | git checkout and build logs |
-| `/var/log/fawwk/` | auto-deploy logs (`sync.log`, `<app>.log`) |
+| `/var/log/fawwk/` | auto-deploy logs (`sync.log`, `hooks.log`, `<app>.log`) |
 
 ## Notes and limits (v0.1)
 
@@ -161,6 +190,5 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 ## Roadmap
 
 - Web panel at `panel.<domain>`
-- GitHub webhooks for instant deploys
 - Managed Postgres/Redis with backups
 - docker-compose apps, preview deploys per branch

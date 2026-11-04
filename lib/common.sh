@@ -34,7 +34,7 @@ conf_set() {
 # ---------- app config ----------
 # Every app lives in $APPS_ETC/<name>/ (app.conf, env, token|deploy_key, history)
 # and $APPS_VAR/<name>/ (src checkout, build logs). Fields are prefixed A_.
-APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_DIR A_BUILD A_PORT A_ROUTES A_STRIP A_HEALTH
+APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_GH_SOURCE A_GH_INSTALL A_DIR A_BUILD A_PORT A_ROUTES A_STRIP A_HEALTH
             A_AUTO A_STATE A_CONTAINER A_IMAGE A_COMMIT A_FAILED_COMMIT A_CREATED A_DEPLOYED)
 
 app_dir()     { printf '%s/%s' "$APPS_ETC" "$1"; }

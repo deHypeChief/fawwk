@@ -44,6 +44,11 @@ proxy_render() (
   printf '{\n\temail %s\n}\n\n' "${EMAIL:-admin@localhost}"
   printf 'import /etc/caddy/custom/*.caddy\n\n'
 
+  # GitHub webhooks and the one-click GitHub App setup, handled by the fawwk-hooks container.
+  if [[ -n ${PANEL_HOST-} && -f $FAWWK_ETC/hooks.enabled ]]; then
+    printf '%s {\n\tencode zstd gzip\n\t@hooks path /hooks/* /github/*\n\thandle @hooks {\n\t\treverse_proxy fawwk-hooks:8000\n\t}\n\thandle {\n\t\trespond "Fawwk" 404\n\t}\n}\n\n' "$PANEL_HOST"
+  fi
+
   ((${#rows[@]})) || exit 0
   # Group by host; longest path first so /api/v2 wins over /api, and / comes last.
   printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1 -k2,2nr | awk -F'|' '

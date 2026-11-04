@@ -19,6 +19,7 @@ Options:
   --env-file <file>        Load env vars from a .env file
   --token-file <file>      Private repo: file containing a personal access token
   --deploy-key             Private repo: use a generated SSH deploy key
+  --github                 Use the connected GitHub App (see: fawwk github)
   --build <type>           auto | dockerfile | nixpacks | static (default: auto)
   --no-strip               Keep the path prefix when proxying (example.com/api → /api/...)
   --auto / --no-auto       Auto-deploy on every push (default: on)
@@ -42,6 +43,7 @@ cmd_create() {
       --env-file) need_arg "$@"; envfile=$2; shift 2 ;;
       --token-file) need_arg "$@"; token_file=$2; auth=token; shift 2 ;;
       --deploy-key) auth=deploykey; shift ;;
+      --github) auth=github; shift ;;
       --build) need_arg "$@"; build=$2; shift 2 ;;
       --no-strip) strip=no; shift ;;
       --auto) auto=yes; shift ;;

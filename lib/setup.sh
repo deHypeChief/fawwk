@@ -54,7 +54,7 @@ cmd_setup() {
   export DEBIAN_FRONTEND=noninteractive
   spin_start "apt-get install base packages"
   apt-get update -q >/dev/null
-  apt-get install -y -q ca-certificates curl git gnupg ufw fail2ban openssh-client unattended-upgrades >/dev/null
+  apt-get install -y -q ca-certificates curl git gnupg jq openssl ufw fail2ban openssh-client unattended-upgrades >/dev/null
   spin_stop
   ok "Base packages"
 
@@ -84,6 +84,7 @@ cmd_setup() {
   proxy_reload && ok "Caddy is running on ports 80 and 443"
 
   setup_timer
+  hooks_enabled && { step "GitHub webhooks"; hooks_ensure; }
 
   step "DNS"
   info "Create these records with your DNS provider (both pointing to $ip):"

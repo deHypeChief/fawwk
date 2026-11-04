@@ -141,7 +141,7 @@ cmd_info() {
   k() { printf '  %s%-14s%s %s\n' "$C_MUTED" "$1" "$C_RESET" "$2"; }
   k Repo "$(repo_path "$A_REPO") @ $A_BRANCH"
   [[ $A_DIR != . ]] && k Folder "$A_DIR"
-  k Access "$A_AUTH"
+  k Access "$A_AUTH${A_GH_SOURCE:+ ($A_GH_SOURCE)}"
   k Build "${A_BUILD:-auto}"
   if [[ -n $A_ROUTES ]]; then
     for r in $A_ROUTES; do k URL "${C_ACCENT2}$(route_url "$r")${C_RESET}"; done
@@ -451,5 +451,7 @@ cmd_update() {
   [[ -d $FAWWK_HOME/.git ]] || die "Fawwk at $FAWWK_HOME wasn't installed from git. Re-run install.sh from a new copy."
   git -C "$FAWWK_HOME" pull --ff-only || die "Update failed."
   chmod +x "$FAWWK_HOME/bin/fawwk" "$FAWWK_HOME/lib/askpass.sh"
+  # The webhook receiver runs code from this checkout; restart it to pick up changes.
+  docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1 && docker restart "$HOOKS_CONTAINER" >/dev/null 2>&1 || true
   ok "Fawwk updated to $("$FAWWK_HOME/bin/fawwk" version)"
 }

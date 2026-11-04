@@ -38,6 +38,12 @@ git_env() {
   export GIT_TERMINAL_PROMPT=0
   unset GIT_ASKPASS GIT_SSH_COMMAND FAWWK_GIT_TOKEN_FILE
   case $A_AUTH in
+    github)
+      # Short-lived installation token from the GitHub App, refreshed as needed.
+      gh_app_token || { echo "Couldn't get a GitHub App token for $A_NAME (is the app still installed on $(repo_path "$A_REPO")?)" >&2; return 1; }
+      export FAWWK_GIT_TOKEN_FILE="$d/token"
+      export GIT_ASKPASS="$FAWWK_HOME/lib/askpass.sh"
+      ;;
     token)
       export FAWWK_GIT_TOKEN_FILE="$d/token"
       export GIT_ASKPASS="$FAWWK_HOME/lib/askpass.sh"
@@ -51,7 +57,7 @@ git_env() {
 git_url() { if [[ $A_AUTH == deploykey ]]; then repo_ssh "$A_REPO"; else repo_https "$A_REPO"; fi; }
 
 # git_cmd ARGS... — git with the app's credentials and no credential helpers.
-git_cmd() { (git_env; timeout 300 git -c credential.helper= "$@"); }
+git_cmd() { (git_env || exit 1; timeout 300 git -c credential.helper= "$@"); }
 
 # Returns 0 if the repo is readable with the current A_AUTH.
 git_probe() { git_cmd ls-remote --heads "$(git_url)" >/dev/null 2>&1; }
@@ -103,23 +109,69 @@ deploykey_create() {
 
 # Interactive: make sure the server can read A_REPO, setting A_AUTH (public|token|deploykey).
 git_setup_access() {
-  local preset=${1-} token_file=${2-} pick tries pub d host
+  local preset=${1-} token_file=${2-} pick tries pub d host found=""
   d=$(app_dir "$A_NAME")
   host=$(repo_https "$A_REPO"); host=${host#*://}; host=${host%%/*}
 
   A_AUTH=public
+  # A connected GitHub App installed on this repo: no keys needed, and pushes deploy instantly.
+  if [[ ( -z $preset || $preset == github ) && $host == github.com ]] && gh_have_sources; then
+
+    gh_need_jq
+    spin_start "Looking for the Fawwk GitHub App on $(repo_path "$A_REPO")"
+    if found=$(gh_find_installation "$(repo_path "$A_REPO")"); then
+      spin_stop
+      read -r A_GH_SOURCE A_GH_INSTALL <<<"$found"
+      A_AUTH=github
+      ok "Access through GitHub App $A_GH_SOURCE ${C_MUTED}(pushes deploy instantly)${C_RESET}"
+      return 0
+    fi
+    spin_stop
+  fi
   if [[ -z $preset ]]; then
     spin_start "Checking access to $(repo_path "$A_REPO")"
-    if git_probe; then spin_stop; ok "Public repository, no credentials needed"; return 0; fi
+    if git_probe; then
+      spin_stop; ok "Public repository, no credentials needed"
+      [[ $host == github.com ]] && hint "For instant deploys on push, connect GitHub: sudo fawwk github connect"
+      return 0
+    fi
     spin_stop
   fi
 
   if [[ -z $preset ]]; then
     warn "Can't read the repo anonymously (it's private, or the URL is wrong)."
-    choose pick "How should this server get access?" 1 \
-      "Deploy key: read-only access to this one repo (recommended)" \
-      "Personal access token"
-    [[ $pick == 1 ]] && preset=deploykey || preset=token
+    local opts=() kinds=()
+    if [[ $host == github.com ]]; then
+      if gh_have_sources; then opts+=("GitHub App: install $(gh_sources | head -n1) on this repo (recommended)")
+      else opts+=("Connect GitHub: one-time setup for all your repos, instant deploys (recommended)")
+      fi
+      kinds+=(github)
+    fi
+    opts+=("Deploy key: read-only access to this one repo" "Personal access token")
+    kinds+=(deploykey token)
+    choose pick "How should this server get access?" 1 "${opts[@]}"
+    preset=${kinds[pick - 1]}
+  fi
+
+  if [[ $preset == github ]]; then
+    gh_have_sources || github_connect
+    local src
+    for tries in 1 2 3 4 5; do
+      src=$(gh_sources | head -n1)
+      gh_load "$src"
+      step "Install $GH_SLUG on $(repo_path "$A_REPO")"
+      info "Open $(gh_install_url "$src"), select ${C_BOLD}$(repo_path "$A_REPO")${C_RESET} and click Install (or Save)."
+      is_interactive && read -r -s -p "  ${C_ACCENT}${G_PROMPT}${C_RESET} ${C_MUTED}Press Enter once it's installed${C_RESET}" _ && printf '\n' >&2
+      if found=$(gh_find_installation "$(repo_path "$A_REPO")"); then
+        read -r A_GH_SOURCE A_GH_INSTALL <<<"$found"
+        A_AUTH=github
+        ok "Access through GitHub App $A_GH_SOURCE ${C_MUTED}(pushes deploy instantly)${C_RESET}"
+        return 0
+      fi
+      is_interactive || break
+      warn "The app isn't installed on $(repo_path "$A_REPO") yet (attempt $tries/5)."
+    done
+    die "No GitHub App installed on $A_REPO."
   fi
 
   if [[ $preset == deploykey ]]; then
