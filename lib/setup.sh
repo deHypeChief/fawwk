@@ -209,8 +209,8 @@ setup_firewall() {
 
 # Rotates Fawwk's own logs (sync.log, hooks.log, <app>.log, <app>-cron.log).
 setup_logrotate() {
-  [[ -d /etc/logrotate.d ]] || return 1
-  cat >/etc/logrotate.d/fawwk <<EOF
+  [[ -d $LOGROTATE_DIR ]] || return 1
+  cat >"$LOGROTATE_DIR/fawwk" <<EOF
 $FAWWK_LOG/*.log {
 	weekly
 	rotate 8

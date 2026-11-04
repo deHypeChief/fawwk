@@ -105,7 +105,8 @@ step() { printf '\n%s%s%s %s%s%s\n' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "
 info() { ui_lead; printf '%s%s\n' "$UI_LEAD" "$*" >&2; }
 hint() { ui_lead; printf '%s%s%s%s\n' "$UI_LEAD" "$C_MUTED" "$*" "$C_RESET" >&2; }
 ok()   { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_GREEN" "$G_OK" "$C_RESET" "$*" >&2; }
-warn() { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_YELLOW" "$G_WARN" "$C_RESET" "$*" >&2; }
+UI_WARNINGS=0   # counted so a summary (e.g. doctor's) doesn't call a run with warnings "all good"
+warn() { UI_WARNINGS=$((UI_WARNINGS + 1)); ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_YELLOW" "$G_WARN" "$C_RESET" "$*" >&2; }
 err()  { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_RED" "$G_ERR" "$C_RESET" "$*" >&2; }
 die()  { spin_stop; err "$*"; FAWWK_DIED=1; exit 1; }
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }

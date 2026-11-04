@@ -46,7 +46,10 @@ if [[ -n $here && -f $here/bin/fawwk && -d $here/lib ]]; then
 else
   [[ -n $REPO ]] || { echo "Set FAWWK_REPO to the git URL of Fawwk, or run install.sh from a copy of the repo." >&2; exit 1; }
   command -v git >/dev/null || { apt-get update -q && apt-get install -y -q git; }
-  if [[ -d $PREFIX/.git ]]; then git -C "$PREFIX" pull --ff-only
+  # An existing install follows its branch even if upstream history was rewritten (no fast-forward).
+  if [[ -d $PREFIX/.git ]]; then
+    b=$(git -C "$PREFIX" symbolic-ref --short -q HEAD || echo main)
+    git -C "$PREFIX" fetch -q origin "$b" && git -C "$PREFIX" checkout -q -f -B "$b" FETCH_HEAD
   else rm -rf "$PREFIX"; git clone --depth 1 "$REPO" "$PREFIX"
   fi
 fi

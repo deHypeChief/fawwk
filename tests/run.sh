@@ -15,8 +15,10 @@ PASS=0 FAIL=0 FAILED=()
 new_sandbox() {
   SB=$(mktemp -d)
   export FAWWK_ETC=$SB/etc FAWWK_VAR=$SB/var FAWWK_LOG=$SB/log FAWWK_CRON_DIR=$SB/cron.d FAWWK_HOME=$ROOT
+  export FAWWK_LOGROTATE_DIR=$SB/logrotate.d
   export FAKE_DOCKER_ROOT=$SB/docker NO_COLOR=1
-  mkdir -p "$FAWWK_ETC/apps" "$FAWWK_VAR/apps" "$FAWWK_LOG" "$FAWWK_CRON_DIR" "$SB/bin" "$FAKE_DOCKER_ROOT/volumes"
+  mkdir -p "$FAWWK_ETC/apps" "$FAWWK_VAR/apps" "$FAWWK_LOG" "$FAWWK_CRON_DIR" "$FAWWK_LOGROTATE_DIR" "$SB/bin" \
+    "$FAKE_DOCKER_ROOT/volumes"
   printf 'DOMAIN=example.com\nEMAIL=ops@example.com\nPANEL_SUB=panel\nPANEL_HOST=panel.example.com\nSERVER_IP=203.0.113.7\n' >"$FAWWK_ETC/fawwk.conf"
   # A docker stub: enough for the code paths under test, silent success for the rest.
   cat >"$SB/bin/docker" <<'EOF'
@@ -469,6 +471,50 @@ EOF
   FAIL_RELEASE=1 auto_deploy api "$third" sync.log 2>/dev/null
   has "$(cat "$FAWWK_LOG/sync.log")" "api: deploy of ${third:0:7} FAILED"
   eq "$(jq -r '.status + " " + .app + " " + .commit' "$SB/posted")" "failed api $third"
+}
+
+# fawwk update on a shallow install whose upstream branch was force-rewritten (no fast-forward possible),
+# with local edits (kept unless confirmed), and switching branches with --branch.
+test_update_follows_rewritten_history() {
+  [[ $EUID -eq 0 ]] || { echo "skipped (needs root)"; return 0; }
+  local o=$SB/origin home=$SB/opt-fawwk gc=(-c user.email=t@t -c user.name=t) out rc
+  git init -q -b main "$o"
+  (cd "$ROOT" && git ls-files -co --exclude-standard -z | xargs -0 cp --parents -t "$o")
+  git -C "$o" add -A && git -C "$o" "${gc[@]}" commit -qm "v1"
+  git clone -q --depth 1 "file://$o" "$home"
+  # Upstream rewrites main: the installed commit is no longer an ancestor.
+  echo rewritten >"$o/MARKER"
+  git -C "$o" add -A && git -C "$o" "${gc[@]}" commit -q --amend -m "v1, rewritten"
+  out=$("$home/bin/fawwk" update 2>&1) || { echo "$out"; return 1; }
+  eq "$(git -C "$home" rev-parse HEAD)" "$(git -C "$o" rev-parse HEAD)"
+  has "$out" "Fawwk updated"
+  [[ -f $FAWWK_LOGROTATE_DIR/fawwk ]]   # post-update ran from the new code
+
+  # Local edits: not discarded without a yes (non-interactive = no), and a copy is saved.
+  echo "# local tweak" >>"$home/lib/ui.sh"
+  echo more >>"$o/MARKER"; git -C "$o" "${gc[@]}" commit -qam "v2"
+  rc=0; out=$("$home/bin/fawwk" update 2>&1 </dev/null) || rc=$?
+  eq "$rc" 1
+  has "$out" "Update cancelled"
+  has "$(tail -n1 "$home/lib/ui.sh")" "# local tweak"
+  has "$(cat "$FAWWK_VAR"/fawwk-local-changes-*.patch)" "+# local tweak"
+  git -C "$home" checkout -q -- lib/ui.sh
+
+  # --branch: try another branch, then go back.
+  git -C "$o" checkout -q -b feature && echo f >"$o/FEATURE" && git -C "$o" add -A && git -C "$o" "${gc[@]}" commit -qm feature
+  "$home/bin/fawwk" update --branch feature >/dev/null 2>&1
+  [[ -f $home/FEATURE ]]
+  eq "$(git -C "$home" symbolic-ref --short HEAD)" feature
+  "$home/bin/fawwk" update --branch main >/dev/null 2>&1
+  [[ ! -e $home/FEATURE ]]
+  eq "$(git -C "$home" rev-parse HEAD)" "$(git -C "$o" rev-parse main)"
+}
+
+test_doctor_counts_warnings() {
+  load_fawwk
+  UI_WARNINGS=0
+  warn "one" 2>/dev/null; warn "two" 2>/dev/null
+  eq "$UI_WARNINGS" 2
 }
 
 # ---------- run ----------
