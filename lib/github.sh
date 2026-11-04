@@ -111,13 +111,16 @@ hooks_ensure() {
   touch "$FAWWK_ETC/hooks.enabled"
   if ! docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1; then
     spin_start "Starting the webhook receiver"
-    docker run -d --name "$HOOKS_CONTAINER" --network "$FAWWK_NETWORK" --restart unless-stopped \
+    local out
+    # Pull separately and quietly so Docker's progress output doesn't break the screen.
+    docker image inspect "$HOOKS_IMAGE" >/dev/null 2>&1 || docker pull -q "$HOOKS_IMAGE" >/dev/null 2>&1 || true
+    out=$(docker run -d --name "$HOOKS_CONTAINER" --network "$FAWWK_NETWORK" --restart unless-stopped \
       --read-only --tmpfs /tmp --memory 64m --cap-drop ALL \
       -v "$FAWWK_HOME/lib/hooks.py:/app/hooks.py:ro" \
       -v "$HOOKS_DIR/secrets:/secrets:ro" -v "$HOOKS_DIR/pages:/pages:ro" \
       -v "$HOOKS_DIR/codes:/codes" -v "$HOOKS_DIR/inbox:/inbox" \
       --log-opt max-size=10m --log-opt max-file=3 \
-      "$HOOKS_IMAGE" python -u /app/hooks.py >/dev/null
+      "$HOOKS_IMAGE" python -u /app/hooks.py 2>&1) || { spin_stop; err "Couldn't start the webhook receiver:"; printf '%s\n' "$out" | tail -n 5 | ui_quote; die "Check Docker, then run this again."; }
     spin_stop
   elif [[ $(docker inspect -f '{{.State.Running}}' "$HOOKS_CONTAINER" 2>/dev/null) != true ]]; then
     docker start "$HOOKS_CONTAINER" >/dev/null
@@ -260,6 +263,7 @@ github_connect() {
   step "Webhook receiver"
   dns_report "$PANEL_HOST"
   hooks_ensure
+  github_check_reachable
 
   step "Create the GitHub App"
   local state name manifest page action base="https://$PANEL_HOST"
@@ -316,6 +320,27 @@ EOF
   ok "Created GitHub App ${C_BOLD}$slug${C_RESET} for $(jq -r '.owner.login' <<<"$resp")"
 
   github_install "$slug"
+}
+
+# GitHub (and your browser) must reach https://<panel>/github/... Check it from here before waiting.
+github_check_reachable() {
+  local url="https://$PANEL_HOST/github/installed" i
+  spin_start "Checking that $PANEL_HOST is reachable over HTTPS"
+  # The first request also makes Caddy fetch the HTTPS certificate, which can take a few seconds.
+  for i in 1 2 3 4 5 6; do
+    curl -fsS --max-time 15 -o /dev/null "$url" 2>/dev/null && { spin_stop; ok "https://$PANEL_HOST is reachable"; return 0; }
+    sleep 5
+  done
+  spin_stop
+  err "https://$PANEL_HOST isn't reachable, so GitHub can't send you back here."
+  if [[ -z $(dns_lookup "$PANEL_HOST") ]]; then
+    info "Add this DNS record with your DNS provider, wait a few minutes, then run this again:"
+    printf '\n      %-6s %-28s %s\n\n' A "${PANEL_HOST%%.*}   (or * for all subdomains)" "${SERVER_IP:-<server ip>}" >&2
+  else
+    info "DNS resolves, but HTTPS failed. Check: fawwk proxy logs"
+  fi
+  hint "Want a different name than '${PANEL_HOST%%.*}'? Re-run: sudo fawwk setup --panel <name>"
+  FAWWK_DIED=1; exit 1
 }
 
 github_install() {
