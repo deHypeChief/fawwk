@@ -9,18 +9,37 @@ build_context() {
   if [[ -z $A_DIR || $A_DIR == . ]]; then printf '%s' "$src"; else printf '%s/%s' "$src" "$A_DIR"; fi
 }
 
+# build_dockerfile DIR — prints the path of the folder's Dockerfile, whatever its casing
+# (Dockerfile, DOCKERFILE, dockerfile...). Linux is case-sensitive and Docker only looks for
+# "Dockerfile" by itself, so other spellings are passed to it with -f.
+build_dockerfile() {
+  local d=$1 f b
+  [[ -f $d/Dockerfile ]] && { printf '%s' "$d/Dockerfile"; return 0; }
+  for f in "$d"/*; do
+    b=${f##*/}
+    [[ -f $f && ${b,,} == dockerfile ]] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
 # build_detect DIR -> dockerfile | static | nixpacks
 build_detect() {
   local d=$1
-  if [[ -f $d/Dockerfile ]]; then echo dockerfile
+  if build_dockerfile "$d" >/dev/null; then echo dockerfile
   elif [[ -f $d/index.html && ! -f $d/package.json ]]; then echo static
   else echo nixpacks
   fi
 }
 
+# build_describe TYPE [DIR]
 build_describe() {
+  local name=Dockerfile f
+  if [[ $1 == dockerfile && -n ${2-} ]] && f=$(build_dockerfile "$2"); then name=${f##*/}; fi
   case $1 in
-    dockerfile) echo "Dockerfile found, building with Docker" ;;
+    dockerfile)
+      if [[ $name == Dockerfile ]]; then echo "Dockerfile found, building with Docker"
+      else echo "$name found, building with Docker (tip: rename it to 'Dockerfile', the standard name)"
+      fi ;;
     static)     echo "Static site (index.html), served by Caddy" ;;
     nixpacks)   echo "No Dockerfile, auto-detecting the stack with Nixpacks" ;;
   esac
@@ -31,7 +50,7 @@ build_port_hint() {
   local d=$1 type=$2 p=''
   case $type in
     static) p=$STATIC_PORT ;;
-    dockerfile) p=$(grep -iE '^[[:space:]]*EXPOSE[[:space:]]+[0-9]+' "$d/Dockerfile" 2>/dev/null | head -n1 | grep -oE '[0-9]+' | head -n1 || true) ;;
+    dockerfile) p=$(grep -iE '^[[:space:]]*EXPOSE[[:space:]]+[0-9]+' "$(build_dockerfile "$d" || true)" 2>/dev/null | head -n1 | grep -oE '[0-9]+' | head -n1 || true) ;;
     nixpacks)
       if [[ -f $d/package.json ]]; then p=3000
       elif [[ -f $d/requirements.txt || -f $d/pyproject.toml ]]; then p=8000
@@ -63,7 +82,7 @@ build_image() {
 
   type=$A_BUILD
   [[ -z $type || $type == auto ]] && type=$(build_detect "$ctx")
-  info "$(build_describe "$type")"
+  info "$(build_describe "$type" "$ctx")"
 
   # App env is available at build time too (needed by e.g. Next.js NEXT_PUBLIC_* vars).
   # Images stay on this server; they're never pushed anywhere.
@@ -75,7 +94,9 @@ build_image() {
 
   case $type in
     dockerfile)
-      DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" "${args[@]}" "$ctx" ;;
+      local dfile
+      dfile=$(build_dockerfile "$ctx") || { echo "No Dockerfile in '${A_DIR:-.}' (build type is set to dockerfile)"; exit 1; }
+      DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
     static)
       local df
       df="$(app_var "$A_NAME")/static.Dockerfile"

@@ -116,7 +116,7 @@ cmd_create() {
   A_BUILD=$build
   detected=$build
   [[ $detected == auto ]] && detected=$(build_detect "$ctx")
-  ok "$(build_describe "$detected")"
+  ok "$(build_describe "$detected" "$ctx")"
   if [[ $detected == nixpacks ]] && ! command -v nixpacks >/dev/null 2>&1; then
     die "This repo has no Dockerfile and Nixpacks isn't installed. Re-run: sudo fawwk setup"
   fi
@@ -206,8 +206,9 @@ create_parse_routes() {
 # Lists likely app folders in a monorepo to help pick --dir.
 create_suggest_dir() {
   local src=$1 found
-  [[ -f $src/Dockerfile || -f $src/package.json || -f $src/index.html ]] && return 0
-  found=$(cd "$src" && find . -mindepth 2 -maxdepth 3 \( -name Dockerfile -o -name package.json \) \
+  build_dockerfile "$src" >/dev/null && return 0
+  [[ -f $src/package.json || -f $src/index.html ]] && return 0
+  found=$(cd "$src" && find . -mindepth 2 -maxdepth 3 \( -iname Dockerfile -o -name package.json \) \
     -not -path '*/node_modules/*' 2>/dev/null | xargs -r -n1 dirname | sed 's#^\./##' | sort -u | head -n 8 | tr '\n' ' ' || true)
   [[ -n $found ]] && info "Nothing to build at the repo root. Candidate folders: ${C_ACCENT2}$found${C_RESET}"
   return 0
