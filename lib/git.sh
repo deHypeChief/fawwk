@@ -108,7 +108,11 @@ git_setup_access() {
   host=$(repo_https "$A_REPO"); host=${host#*://}; host=${host%%/*}
 
   A_AUTH=public
-  if [[ -z $preset ]] && git_probe; then ok "Public repository, no credentials needed"; return 0; fi
+  if [[ -z $preset ]]; then
+    spin_start "Checking access to $(repo_path "$A_REPO")"
+    if git_probe; then spin_stop; ok "Public repository, no credentials needed"; return 0; fi
+    spin_stop
+  fi
 
   if [[ -z $preset ]]; then
     warn "Can't read the repo anonymously (it's private, or the URL is wrong)."
@@ -122,15 +126,18 @@ git_setup_access() {
     A_AUTH=deploykey
     pub=$(deploykey_create)
     step "Add this deploy key to the repo"
+    local where
     if [[ $host == github.com ]]; then
-      info "Open: https://github.com/$(repo_path "$A_REPO")/settings/keys/new"
+      where="Open ${C_ACCENT2}https://github.com/$(repo_path "$A_REPO")/settings/keys/new${C_RESET}"
     else
-      info "In your git host, add it as a read-only deploy key for $(repo_path "$A_REPO")"
+      where="In your git host, add a read-only deploy key for $(repo_path "$A_REPO")"
     fi
-    info "Title: fawwk-$(hostname)   (leave 'Allow write access' unchecked)"
+    info "$where"
+    hint "Title: fawwk-$(hostname)  $G_SEP  leave 'Allow write access' unchecked"
+    # Printed bare (no box or indent) so it copies cleanly.
     printf '\n%s\n\n' "$pub" >&2
     for tries in 1 2 3 4 5; do
-      is_interactive && read -r -p "  Press Enter once the key is added... " _
+      is_interactive && read -r -s -p "  ${C_ACCENT}${G_PROMPT}${C_RESET} ${C_MUTED}Press Enter once the key is added${C_RESET}" _ && printf '\n' >&2
       git_probe && { ok "Repository access works (deploy key)"; return 0; }
       is_interactive || break
       warn "Still can't read the repo. Check the key was saved on the right repo (attempt $tries/5)."
@@ -145,7 +152,7 @@ git_setup_access() {
     install -m 600 "$token_file" "$d/token"
   else
     info "Create a token with read access to the repo's contents"
-    [[ $host == github.com ]] && info "(GitHub: Settings → Developer settings → Fine-grained tokens → Contents: Read-only)"
+    [[ $host == github.com ]] && hint "GitHub: Settings $G_ARROW Developer settings $G_ARROW Fine-grained tokens $G_ARROW Contents: Read-only"
     for tries in 1 2 3; do
       local tok
       ask_secret tok "Paste the token"

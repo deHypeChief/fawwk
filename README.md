@@ -88,6 +88,29 @@ sudo fawwk create api --repo you/api --domain "api.example.com example.com/api" 
   --port 8000 --health /health --env-file ./api.env --deploy-key --yes
 ```
 
+## Example: Express API + React frontend
+
+Two Dockerfiles means two Fawwk apps, one per service. This works the same whether they're two
+repos or two folders in one repo (answer the **Folder** question with e.g. `server` and `client`).
+
+```bash
+sudo fawwk create api     # repo: you/myproject, folder: server, domain: example.com/api, port: 4000
+sudo fawwk create web     # repo: you/myproject, folder: client, domain: example.com,     port: 80
+```
+
+- **Express:** listen on `process.env.PORT` and `0.0.0.0` (`app.listen(process.env.PORT || 4000, "0.0.0.0")`).
+  With `example.com/api` the prefix is stripped by default, so `/api/users` reaches Express as `/users`.
+  If your routes already start with `/api`, answer **No** to "Strip the path prefix" (or pass `--no-strip`).
+- **React:** a Dockerfile that builds and serves with nginx usually `EXPOSE`s 80, which Fawwk suggests as
+  the port. Serving the API from `example.com/api` keeps both on one origin, so the frontend calls
+  `/api/...` and needs no CORS setup.
+- **Build-time vars** (`VITE_*`, `REACT_APP_*`): Fawwk passes every env var as a `--build-arg`, but Docker
+  only hands it to the build if the Dockerfile declares it, so add `ARG VITE_API_URL` before `RUN npm run build`.
+- **Private repo:** Fawwk asks for access once per app. Each app gets its own deploy key, and GitHub
+  doesn't let one key be added to two repos, so for a single repo add both keys to that repo.
+
+Prefer a separate API subdomain? Use `api.example.com` for the API and enable CORS for `https://example.com`.
+
 ## Everyday commands
 
 ```bash
@@ -120,6 +143,21 @@ fawwk remove api
 ```
 
 All commands need root (`sudo`).
+
+## Terminal UI
+
+Output reads like a transcript: each step (`●`) has its results hanging under it (`⎿`), long work shows
+a spinner with the live build line, and questions collapse to one answered line once you reply. Choices
+are arrow-key menus (`↑/↓` or `j/k`, Enter; a number or the first letter also works).
+
+| Variable | Effect |
+| --- | --- |
+| `FAWWK_THEME=mint` | default: mint and violet. Also `ocean`, `ember`, `mono` |
+| `NO_COLOR=1` | no colours |
+| `FAWWK_ASCII=1` | plain ASCII symbols, for terminals without Unicode |
+
+Run `sudo` with `-E`, or set the variable after it (`sudo FAWWK_THEME=ocean fawwk list`).
+When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and menus switch off.
 
 ## Files on the server
 

@@ -38,7 +38,8 @@ env_parse() {
 
 # env_merge FILE... -> merged KEY=VALUE on stdout; later files win, first-seen order kept.
 env_merge() {
-  cat "$@" 2>/dev/null | awk '
+  # Missing files are fine (e.g. a new app has no env file yet); pipefail must not trip on cat.
+  { cat "$@" 2>/dev/null || true; } | awk '
     { i = index($0, "="); if (i < 2) next; k = substr($0, 1, i - 1)
       if (!(k in v)) order[++n] = k; v[k] = $0 }
     END { for (j = 1; j <= n; j++) print v[order[j]] }'
@@ -76,9 +77,9 @@ env_example_keys() {
 # Reads a pasted .env block from the terminal until Ctrl-D.
 env_read_paste() {
   is_interactive || return 0
-  info "Paste your environment variables (.env format)."
-  info "When you're done, press Enter and then Ctrl-D. Nothing to add? Just press Ctrl-D."
-  printf '%s' "$C_DIM" >&2
+  printf '  %s%s%s %sPaste your environment variables%s %s(.env format)%s\n' "$C_ACCENT" "$G_ASK" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_MUTED" "$C_RESET" >&2
+  printf '    %sEnter then ctrl+d when done %s nothing to add? just ctrl+d%s\n' "$C_MUTED" "$G_SEP" "$C_RESET" >&2
+  printf '%s' "$C_MUTED" >&2
   env_parse
   printf '%s' "$C_RESET" >&2
 }
@@ -91,9 +92,9 @@ env_ask_missing() {
     env_has "$tmp" "$key" || missing+=("$key")
   done < <(env_example_keys "$srcdir")
   ((${#missing[@]})) || return 0
-  info "$(basename "$(env_example_file "$srcdir")") lists ${#missing[@]} variable(s) you haven't set:"
+  info "$(basename "$(env_example_file "$srcdir")") lists ${#missing[@]} variable(s) you haven't set ${C_MUTED}(enter skips)${C_RESET}"
   for key in "${missing[@]}"; do
-    ask_optional val "  $key"
+    ask_optional val "$key"
     [[ -n $val ]] && printf '%s=%s\n' "$key" "$val" >>"$tmp"
   done
 }
@@ -106,7 +107,7 @@ env_warn_missing() {
     [[ -z $key || $key == PORT ]] && continue
     env_has "$f" "$key" || missing+=("$key")
   done < <(env_example_keys "$srcdir")
-  ((${#missing[@]} == 0)) || warn "Not set (listed in the example env): ${missing[*]}   → fawwk env $A_NAME set KEY=value"
+  ((${#missing[@]} == 0)) || warn "Not set (listed in the example env): ${missing[*]}  ${C_MUTED}$G_ARROW fawwk env $A_NAME set KEY=value${C_RESET}"
 }
 
 env_mask() {

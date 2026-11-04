@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fawwk — shared helpers: paths, output, prompts, config files, validation, locking.
+# fawwk — shared helpers: paths, config files, validation, locking.
 
 FAWWK_VERSION="0.1.0"
 
@@ -19,101 +19,7 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-90}"     # seconds a new container gets to ans
 FAWWK_YES=0        # --yes: accept defaults, answer yes, never prompt
 LOCK_NOWAIT=0     # used by auto-deploy: skip apps that are busy instead of waiting
 
-# ---------- output ----------
-if [[ -t 2 ]]; then
-  C_RESET=$'\e[0m' C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m'
-  C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m' C_BLUE=$'\e[34m' C_CYAN=$'\e[36m'
-else
-  C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN=''
-fi
-
-step() { printf '\n%s==>%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
-info() { printf '    %s\n' "$*" >&2; }
-ok()   { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
-warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-err()  { printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
-die()  { err "$*"; FAWWK_DIED=1; exit 1; }
-ts()   { date '+%Y-%m-%d %H:%M:%S'; }
-
-# ---------- prompts ----------
-is_interactive() { [[ $FAWWK_YES -eq 0 && -t 0 ]]; }
-
-# ask VAR "Question" [default] [validator]
-# Re-asks until the validator passes. Non-interactive: uses the default or dies.
-ask() {
-  local __var=$1 q=$2 def=${3-} check=${4-} ans
-  while true; do
-    if is_interactive; then
-      if [[ -n $def ]]; then
-        read -r -p "  ${C_CYAN}?${C_RESET} $q ${C_DIM}[$def]${C_RESET}: " ans || ans=''
-      else
-        read -r -p "  ${C_CYAN}?${C_RESET} $q: " ans || ans=''
-      fi
-      ans=${ans:-$def}
-      if [[ -z $ans ]]; then warn "A value is required."; continue; fi
-    else
-      ans=$def
-      [[ -n $ans ]] || die "Missing value for: $q (pass it as a flag or run interactively)"
-    fi
-    if [[ -n $check ]] && ! "$check" "$ans"; then
-      is_interactive || die "Invalid value for '$q': $ans"
-      continue
-    fi
-    printf -v "$__var" '%s' "$ans"
-    return 0
-  done
-}
-
-# ask_optional VAR "Question" [default] — empty answer allowed.
-ask_optional() {
-  local __var=$1 q=$2 def=${3-} ans=''
-  if is_interactive; then
-    read -r -p "  ${C_CYAN}?${C_RESET} $q ${C_DIM}[${def:-skip}]${C_RESET}: " ans || ans=''
-  fi
-  printf -v "$__var" '%s' "${ans:-$def}"
-}
-
-# ask_secret VAR "Question" — hidden input, required.
-ask_secret() {
-  local __var=$1 q=$2 ans=''
-  is_interactive || die "Missing secret: $q (run interactively)"
-  while [[ -z $ans ]]; do
-    read -r -s -p "  ${C_CYAN}?${C_RESET} $q: " ans || ans=''
-    printf '\n' >&2
-  done
-  printf -v "$__var" '%s' "$ans"
-}
-
-# confirm "Question" [Y|N] — returns 0 for yes.
-confirm() {
-  local q=$1 def=${2:-Y} ans hint
-  [[ $def == Y ]] && hint='Y/n' || hint='y/N'
-  if ! is_interactive; then
-    [[ $FAWWK_YES -eq 1 || $def == Y ]]
-    return
-  fi
-  read -r -p "  ${C_CYAN}?${C_RESET} $q ${C_DIM}[$hint]${C_RESET}: " ans || ans=''
-  ans=${ans:-$def}
-  [[ $ans =~ ^[Yy] ]]
-}
-
-# choose VAR "Question" DEFAULT_INDEX "option 1" "option 2" ... — sets VAR to the 1-based index.
-choose() {
-  local __var=$1 q=$2 def=$3 i ans
-  shift 3
-  if ! is_interactive; then printf -v "$__var" '%s' "$def"; return 0; fi
-  printf '  %s?%s %s\n' "$C_CYAN" "$C_RESET" "$q" >&2
-  for ((i = 1; i <= $#; i++)); do printf '      %d) %s\n' "$i" "${!i}" >&2; done
-  while true; do
-    read -r -p "    choice ${C_DIM}[$def]${C_RESET}: " ans || ans=''
-    ans=${ans:-$def}
-    if [[ $ans =~ ^[0-9]+$ ]] && ((ans >= 1 && ans <= $#)); then
-      printf -v "$__var" '%s' "$ans"
-      return 0
-    fi
-    warn "Pick a number between 1 and $#."
-  done
-}
+# Output, prompts and menus live in ui.sh (step, info, ok, warn, err, die, ask, confirm, choose...).
 
 # ---------- config files (KEY=value, shell-quoted, safe to source) ----------
 conf_set() {

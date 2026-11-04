@@ -16,17 +16,19 @@ is_worker() { [[ -z $A_ROUTES ]]; }
 health_wait() {
   local c=$1 ip code='' state restarts deadline=$((SECONDS + HEALTH_TIMEOUT)) url
   if is_worker; then
-    info "Worker app (no domain): checking it stays running..."
+    spin_start "Worker app (no domain): checking it stays running"
     sleep 10
+    spin_stop
     state=$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null || echo 'gone 0')
     [[ $state == "running 0" ]] && return 0
     err "Container isn't staying up (state: $state)"
     return 1
   fi
-  info "Waiting for the app to answer on port $A_PORT (up to ${HEALTH_TIMEOUT}s)..."
+  spin_start "Waiting for the app to answer on port $A_PORT"
   while ((SECONDS < deadline)); do
     read -r state restarts < <(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null || echo 'gone 0')
     if [[ $state == exited || $state == dead || $state == gone ]] || ((restarts > 1)); then
+      spin_stop
       err "The container crashed (state: $state, restarts: $restarts)."
       return 1
     fi
@@ -35,16 +37,17 @@ health_wait() {
       url="http://$ip:$A_PORT${A_HEALTH:-/}"
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || true)
       if [[ -n $A_HEALTH ]]; then
-        [[ $code =~ ^[23] ]] && { ok "Health check passed ($A_HEALTH → $code)"; return 0; }
+        [[ $code =~ ^[23] ]] && { spin_stop; ok "Health check passed ($A_HEALTH $G_ARROW $code)"; return 0; }
       else
-        [[ -n $code && $code != 000 ]] && { ok "App is answering (HTTP $code)"; return 0; }
+        [[ -n $code && $code != 000 ]] && { spin_stop; ok "App is answering (HTTP $code)"; return 0; }
       fi
     fi
     sleep 2
   done
+  spin_stop
   err "No healthy answer on port $A_PORT within ${HEALTH_TIMEOUT}s (last HTTP code: ${code:-none})."
-  info "The app must listen on 0.0.0.0:$A_PORT. It receives PORT=$A_PORT in its environment."
-  info "Wrong port? fawwk port $A_NAME <port>"
+  hint "The app must listen on 0.0.0.0:$A_PORT. It receives PORT=$A_PORT in its environment."
+  hint "Wrong port? fawwk port $A_NAME <port>"
   return 1
 }
 
@@ -78,7 +81,7 @@ release_image() {
 
   if ! health_wait "$cname"; then
     err "Keeping the current version live. Last logs from the new container:"
-    docker logs --tail 40 "$cname" 2>&1 | sed 's/^/      /' >&2
+    docker logs --tail 40 "$cname" 2>&1 | ui_quote
     docker rm -f "$cname" >/dev/null 2>&1 || true
     return 1
   fi
@@ -120,12 +123,15 @@ deploy_app() {
   mkdir -p "$(app_var "$name")/logs"
   log="$(app_var "$name")/logs/$id.log"
 
-  step "Deploying $name from $(repo_path "$A_REPO")@$A_BRANCH"
+  step "Deploying $name ${C_MUTED}from $(repo_path "$A_REPO")@$A_BRANCH${C_RESET}"
+  spin_start "Fetching the latest commit"
   if ! commit=$(git_sync); then
+    spin_stop
     err "Couldn't fetch the code. Check access with: fawwk info $name"
     history_add "$id" - - failed "git fetch failed"
     return 1
   fi
+  spin_stop
   subject=$(git_subject)
   ok "Commit ${commit:0:7}: ${subject:0:70}"
   env_warn_missing "$(build_context)"
@@ -152,14 +158,17 @@ deploy_app() {
 }
 
 deploy_summary() {
-  local r
-  step "$A_NAME is live"
+  local r lines=()
   if is_worker; then
-    ok "Running as a background worker (no domain)"
+    lines+=("${C_GREEN}${G_DOT}${C_RESET} Running as a background worker (no domain)")
   else
-    for r in $A_ROUTES; do ok "$(route_url "$r")"; done
-    info "HTTPS certificates are issued on the first visit once DNS points here."
+    for r in $A_ROUTES; do lines+=("${C_GREEN}${G_DOT}${C_RESET} ${C_ACCENT2}$(route_url "$r")${C_RESET}"); done
+    lines+=("" "${C_MUTED}HTTPS certificates are issued on the first visit once DNS points here.${C_RESET}")
   fi
+  [[ -n ${A_COMMIT-} ]] && lines+=("${C_MUTED}commit ${A_COMMIT:0:7} $G_SEP logs: fawwk logs $A_NAME -f${C_RESET}")
+  printf '\n' >&2
+  ui_box --title "$A_NAME is live" "${lines[@]}"
+  UI_IN_STEP=0
 }
 
 # Recreates the container from the current image (picks up env changes). Zero downtime.

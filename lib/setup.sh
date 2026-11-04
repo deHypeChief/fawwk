@@ -43,7 +43,7 @@ cmd_setup() {
   # shellcheck disable=SC1090
   [[ -f $FAWWK_CONF ]] && source "$FAWWK_CONF"
 
-  printf '\n  %sFawwk server setup%s  %s(v%s)%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$FAWWK_VERSION" "$C_RESET" >&2
+  ui_banner "Server setup ${G_SEP} Docker, HTTPS proxy, firewall, auto-deploy"
   step "Server details"
   ask domain "Main domain (apps get <app>.<domain>)" "${domain:-$DOMAIN}" valid_domain
   domain=${domain,,}
@@ -52,8 +52,10 @@ cmd_setup() {
 
   step "Installing packages"
   export DEBIAN_FRONTEND=noninteractive
+  spin_start "apt-get install base packages"
   apt-get update -q >/dev/null
   apt-get install -y -q ca-certificates curl git gnupg ufw fail2ban openssh-client unattended-upgrades >/dev/null
+  spin_stop
   ok "Base packages"
 
   setup_docker
@@ -85,16 +87,21 @@ cmd_setup() {
 
   step "DNS"
   info "Create these records with your DNS provider (both pointing to $ip):"
-  printf '\n      %-6s %-28s %s\n' "Type" "Name" "Value" >&2
-  printf '      %-6s %-28s %s\n' "A" "$domain" "$ip" >&2
-  printf '      %-6s %-28s %s\n\n' "A" "*.$domain" "$ip" >&2
-  info "The wildcard record means every new app subdomain works without touching DNS again."
+  printf '\n' >&2
+  ui_box "$(printf '%s%-6s %-28s %s%s' "$C_MUTED" Type Name Value "$C_RESET")" \
+    "$(printf '%-6s %-28s %s' A "$domain" "$ip")" \
+    "$(printf '%-6s %-28s %s' A "*.$domain" "$ip")"
+  printf '\n' >&2
+  UI_IN_STEP=0
+  hint "The wildcard record means every new app subdomain works without touching DNS again."
   dns_report "$domain"
   dns_report "fawwk-check-$RANDOM.$domain"
 
-  step "Done"
-  ok "Server is ready. Deploy your first app with:"
-  printf '\n      %ssudo fawwk create%s\n\n' "$C_BOLD" "$C_RESET" >&2
+  printf '\n' >&2
+  ui_box --title "Server is ready" \
+    "Deploy your first app:" "" "  ${C_ACCENT}sudo fawwk create${C_RESET}" "" \
+    "${C_MUTED}Check everything later with: fawwk doctor${C_RESET}"
+  printf '\n' >&2
 }
 
 valid_subdomain_label() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { warn "Use one label like 'panel' (letters, digits, dashes)."; return 1; }; }
@@ -104,7 +111,7 @@ setup_docker() {
     ok "Docker $(docker version -f '{{.Server.Version}}' 2>/dev/null) already installed"
     return 0
   fi
-  info "Installing Docker from the official repository..."
+  spin_start "Installing Docker from the official repository"
   local codename arch
   codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
   arch=$(dpkg --print-architecture)
@@ -116,6 +123,7 @@ setup_docker() {
   apt-get update -q >/dev/null
   apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
   systemctl enable --now docker >/dev/null 2>&1
+  spin_stop
   docker info >/dev/null 2>&1 || die "Docker installed but isn't running. Check: systemctl status docker"
   ok "Docker $(docker version -f '{{.Server.Version}}') installed"
 }
@@ -125,10 +133,12 @@ setup_nixpacks() {
     ok "Nixpacks already installed"
     return 0
   fi
-  info "Installing Nixpacks (builds repos that have no Dockerfile)..."
+  spin_start "Installing Nixpacks (builds repos that have no Dockerfile)"
   if curl -fsSL https://nixpacks.com/install.sh | bash >/dev/null 2>&1 && command -v nixpacks >/dev/null 2>&1; then
+    spin_stop
     ok "Nixpacks installed"
   else
+    spin_stop
     warn "Nixpacks couldn't be installed. Repos without a Dockerfile won't build until it is."
   fi
 }

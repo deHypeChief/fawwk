@@ -87,28 +87,18 @@ build_image() {
     *)
       echo "Unknown build type: $type"; exit 1 ;;
   esac >>"$log" 2>&1 &
-  local pid=$!
-  build_progress "$pid" "$log"
+  local pid=$! t0=$SECONDS
+  spin_start "Building $A_NAME" "$log"
   if ! wait "$pid"; then
-    err "Build failed. Last lines of the build log:"
-    tail -n 30 "$log" | sed 's/^/      /' >&2
-    info "Full log: $log"
+    spin_stop
+    err "Build failed after $((SECONDS - t0))s. Last lines of the build log:"
+    tail -n 30 "$log" | ui_quote
+    hint "Full log: $log"
     return 1
   fi
+  spin_stop
   BUILT_IMAGE=$image
-  ok "Built $image"
-}
-
-# Shows the latest build line while the build runs (only on a terminal).
-build_progress() {
-  local pid=$1 log=$2 last
-  if [[ ! -t 2 ]]; then return 0; fi
-  while kill -0 "$pid" 2>/dev/null; do
-    last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-90 || true)
-    printf '\r\e[K    %s%s%s' "$C_DIM" "$last" "$C_RESET" >&2
-    sleep 1
-  done
-  printf '\r\e[K' >&2
+  ok "Built $image ${C_MUTED}in $((SECONDS - t0))s${C_RESET}"
 }
 
 # Removes old images for the app, keeping the newest KEEP_IMAGES plus the one running.

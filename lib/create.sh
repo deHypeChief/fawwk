@@ -59,7 +59,7 @@ cmd_create() {
   [[ -z $token_file || -f $token_file ]] || die "Token file not found: $token_file"
   [[ $build =~ ^(auto|dockerfile|nixpacks|static)$ ]] || die "--build must be auto, dockerfile, nixpacks or static"
 
-  printf '\n  %sNew app%s\n' "$C_BOLD" "$C_RESET" >&2
+  ui_banner "New app ${G_SEP} answer a few questions, ctrl+c cancels anytime"
 
   # --- repo + name -------------------------------------------------------
   step "Repository"
@@ -93,7 +93,9 @@ cmd_create() {
 
   step "Fetching code"
   local commit
+  spin_start "Cloning $(repo_path "$A_REPO")@$A_BRANCH"
   commit=$(git_sync) || die "Couldn't clone the repo."
+  spin_stop
   ok "Cloned at ${commit:0:7}: $(git_subject | cut -c1-70)"
 
   # --- what to build ----------------------------------------------------
@@ -122,7 +124,7 @@ cmd_create() {
   # --- routing ----------------------------------------------------------
   step "Domains"
   info "Where should it be reachable? Separate several with spaces."
-  info "Examples: $name.$DOMAIN   $DOMAIN   $DOMAIN/api   none (background worker)"
+  hint "e.g. $name.$DOMAIN  $G_SEP  $DOMAIN  $G_SEP  $DOMAIN/api  $G_SEP  none (background worker)"
   while true; do
     ask domains "Domain(s)" "${domains:-$name.$DOMAIN}"
     create_parse_routes "$domains" && break
@@ -170,7 +172,7 @@ cmd_create() {
   A_AUTO=$auto
 
   app_save
-  trap - INT
+  trap ui_on_int INT
 
   create_summary
   if ((do_deploy == 0)) || ! confirm "Deploy now?" Y; then
@@ -207,29 +209,32 @@ create_suggest_dir() {
   [[ -f $src/Dockerfile || -f $src/package.json || -f $src/index.html ]] && return 0
   found=$(cd "$src" && find . -mindepth 2 -maxdepth 3 \( -name Dockerfile -o -name package.json \) \
     -not -path '*/node_modules/*' 2>/dev/null | xargs -r -n1 dirname | sed 's#^\./##' | sort -u | head -n 8 | tr '\n' ' ' || true)
-  [[ -n $found ]] && info "Nothing to build at the repo root. Candidate folders: $found"
+  [[ -n $found ]] && info "Nothing to build at the repo root. Candidate folders: ${C_ACCENT2}$found${C_RESET}"
   return 0
 }
 
 create_summary() {
-  step "Summary"
-  local r
-  printf '      %-14s %s\n' "App" "$A_NAME" >&2
-  printf '      %-14s %s @ %s\n' "Repo" "$(repo_path "$A_REPO")" "$A_BRANCH" >&2
-  [[ $A_DIR != . ]] && printf '      %-14s %s\n' "Folder" "$A_DIR" >&2
-  printf '      %-14s %s\n' "Access" "$A_AUTH" >&2
+  local r l=()
+  l+=("$(kv App "${C_BOLD}$A_NAME${C_RESET}")")
+  l+=("$(kv Repo "$(repo_path "$A_REPO") ${C_MUTED}@${C_RESET} $A_BRANCH")")
+  [[ $A_DIR != . ]] && l+=("$(kv Folder "$A_DIR")")
+  l+=("$(kv Access "$A_AUTH")")
   if [[ -z $A_ROUTES ]]; then
-    printf '      %-14s %s\n' "Type" "background worker (no domain)" >&2
+    l+=("$(kv Type "background worker (no domain)")")
   else
-    for r in $A_ROUTES; do printf '      %-14s %s\n' "URL" "$(route_url "$r")" >&2; done
-    printf '      %-14s %s\n' "Port" "$A_PORT" >&2
-    printf '      %-14s %s\n' "Health check" "${A_HEALTH:-any HTTP response}" >&2
+    for r in $A_ROUTES; do l+=("$(kv URL "${C_ACCENT2}$(route_url "$r")${C_RESET}")"); done
+    l+=("$(kv Port "$A_PORT")")
+    l+=("$(kv "Health check" "${A_HEALTH:-any HTTP response}")")
   fi
-  printf '      %-14s %s\n' "Env vars" "$(env_count "$(app_envfile "$A_NAME")")" >&2
-  printf '      %-14s %s\n' "Auto-deploy" "$A_AUTO" >&2
+  l+=("$(kv "Env vars" "$(env_count "$(app_envfile "$A_NAME")")")")
+  l+=("$(kv Auto-deploy "$A_AUTO")")
+  printf '\n' >&2
+  ui_box --title "Summary" "${l[@]}"
+  UI_IN_STEP=0
 }
 
 create_abort() {
+  spin_stop; ui_cursor_show
   printf '\n' >&2
   warn "Cancelled. Nothing was deployed."
   [[ -n ${A_NAME-} ]] && ! app_exists "$A_NAME" && rm -rf "$(app_dir "$A_NAME")" "$(app_var "$A_NAME")"

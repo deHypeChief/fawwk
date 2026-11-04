@@ -87,30 +87,32 @@ cmd_history() {
   local hf id commit image status note mark
   hf=$(history_file)
   [[ -f $hf ]] || { info "No deploys yet."; return 0; }
-  printf '%s%-17s  %-8s  %-7s  %s%s\n' "$C_BOLD" "DEPLOY" "COMMIT" "STATUS" "NOTE" "$C_RESET"
+  printf '\n  %s%-2s%-17s  %-8s  %-8s  %s%s\n' "$C_MUTED" "" "DEPLOY" "COMMIT" "STATUS" "NOTE" "$C_RESET"
   while IFS=$'\t' read -r id commit image status note; do
-    mark=' '
-    [[ $image == "$A_IMAGE" ]] && mark='*'
-    [[ $status == ok ]] && status="${C_GREEN}ok${C_RESET}     " || status="${C_RED}failed${C_RESET} "
-    printf '%-17s %s %-8s  %s %s\n' "$id" "$mark" "${commit:0:7}" "$status" "$note"
+    mark='  '
+    [[ $image == "$A_IMAGE" ]] && mark="${C_ACCENT}${G_PROMPT}${C_RESET} "
+    [[ $status == ok ]] && status="${C_GREEN}${G_OK} ok${C_RESET}    " || status="${C_RED}${G_ERR} failed${C_RESET}"
+    printf '  %s%-17s  %s%-8s%s  %s  %s\n' "$mark" "$id" "$C_ACCENT2" "${commit:0:7}" "$C_RESET" "$status" "$note"
   done < <(tail -n "${2:-15}" "$hf" | tac)
-  printf '\n%s* = live. Roll back with: fawwk rollback %s [deploy-id]%s\n' "$C_DIM" "$1" "$C_RESET"
+  printf '\n  %s%s live %s roll back with: fawwk rollback %s [deploy-id]%s\n\n' "$C_MUTED" "$G_PROMPT" "$G_SEP" "$1" "$C_RESET"
 }
 
 # ---------- list / info / logs / exec ----------
 cmd_list() {
   require_root list; require_setup
   local name n=0 live
-  printf '%s%-20s %-9s %-8s %-19s %s%s\n' "$C_BOLD" "APP" "STATE" "COMMIT" "DEPLOYED" "URL" "$C_RESET"
+  printf '\n  %s%-20s %-11s %-8s %-19s %s%s\n' "$C_MUTED" "APP" "STATE" "COMMIT" "DEPLOYED" "URL" "$C_RESET"
   while IFS= read -r name; do
     [[ -z $name ]] && continue
     n=$((n + 1))
     app_load "$name"
     live=$(app_live_state)
-    printf '%-20s %-18s %-8s %-19s %s\n' "$name" "$(state_color "$live")" "${A_COMMIT:0:7}" "${A_DEPLOYED:--}" \
-      "$( [[ -n $A_ROUTES ]] && route_url "${A_ROUTES%% *}" || echo '(worker)')"
+    printf '  %s%-20s%s %s %s%-8s%s %-19s %s\n' "$C_BOLD" "$name" "$C_RESET" "$(state_color "$live")" \
+      "$C_ACCENT2" "${A_COMMIT:0:7}" "$C_RESET" "${A_DEPLOYED:--}" \
+      "$( [[ -n $A_ROUTES ]] && route_url "${A_ROUTES%% *}" || echo "${C_MUTED}(worker)${C_RESET}")"
   done < <(app_names)
-  ((n)) || info "No apps yet. Create one with: sudo fawwk create"
+  printf '\n'
+  ((n)) || hint "No apps yet. Create one with: sudo fawwk create"
 }
 
 app_live_state() {
@@ -119,26 +121,30 @@ app_live_state() {
   docker inspect -f '{{.State.Status}}' "$A_CONTAINER" 2>/dev/null || echo missing
 }
 
+# A coloured dot plus the state, always 11 visible characters wide so tables line up.
 state_color() {
+  local c
   case $1 in
-    running) printf '%s%-9s%s' "$C_GREEN" "$1" "$C_RESET" ;;
-    stopped | new) printf '%s%-9s%s' "$C_DIM" "$1" "$C_RESET" ;;
-    *) printf '%s%-9s%s' "$C_RED" "$1" "$C_RESET" ;;
+    running) c=$C_GREEN ;;
+    stopped | new) c=$C_MUTED ;;
+    restarting | created) c=$C_YELLOW ;;
+    *) c=$C_RED ;;
   esac
+  printf '%s%s %-9s%s' "$c" "$G_DOT" "$1" "$C_RESET"
 }
 
 cmd_info() {
   app_require_arg "${1-}" info; require_root info; require_setup
   app_load "$1"
   local r k
-  printf '\n  %s%s%s  %s\n\n' "$C_BOLD" "$A_NAME" "$C_RESET" "$(state_color "$(app_live_state)")"
-  k() { printf '    %-14s %s\n' "$1" "$2"; }
+  printf '\n%s%s%s %s%s%s  %s\n\n' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "$A_NAME" "$C_RESET" "$(state_color "$(app_live_state)")"
+  k() { printf '  %s%-14s%s %s\n' "$C_MUTED" "$1" "$C_RESET" "$2"; }
   k Repo "$(repo_path "$A_REPO") @ $A_BRANCH"
   [[ $A_DIR != . ]] && k Folder "$A_DIR"
   k Access "$A_AUTH"
   k Build "${A_BUILD:-auto}"
   if [[ -n $A_ROUTES ]]; then
-    for r in $A_ROUTES; do k URL "$(route_url "$r")"; done
+    for r in $A_ROUTES; do k URL "${C_ACCENT2}$(route_url "$r")${C_RESET}"; done
     k Port "$A_PORT"
     k Health "${A_HEALTH:-any HTTP response}"
     [[ $A_ROUTES == */* ]] && k "Strip prefix" "$A_STRIP"
@@ -175,7 +181,7 @@ cmd_logs() {
     local last
     last=$(ls -1t "$(app_var "$name")/logs/"*.log 2>/dev/null | head -n1 || true)
     [[ -n $last ]] || die "No build logs yet."
-    info "Build log: $last"
+    hint "Build log: $last"
     tail -n "$tail" "${follow[@]}" "$last"
     return
   fi
@@ -391,7 +397,7 @@ cmd_remove() {
     is_interactive || die "Add --yes to remove without a prompt."
     warn "This deletes $name: its containers, images, env vars and deploy history."
     local typed
-    read -r -p "  Type the app name to confirm: " typed
+    read -r -p "  ${C_RED}${G_PROMPT}${C_RESET} Type ${C_BOLD}$name${C_RESET} to confirm: " typed
     [[ $typed == "$name" ]] || die "Cancelled."
   fi
   app_lock "$name"

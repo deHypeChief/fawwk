@@ -56,6 +56,7 @@ cmd_doctor() {
   ((n)) || info "No apps yet."
 
   printf '\n' >&2
+  UI_IN_STEP=0
   if ((problems)); then err "$problems problem(s) found"; return 1; fi
   ok "Everything looks good"
 }

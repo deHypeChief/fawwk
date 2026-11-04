@@ -5,15 +5,18 @@ set -Eeuo pipefail
 FAWWK_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export FAWWK_HOME
 
-for _lib in common git env build proxy release setup create manage doctor; do
+for _lib in ui common git env build proxy release setup create manage doctor; do
   # shellcheck disable=SC1090
   source "$FAWWK_HOME/lib/$_lib.sh"
 done
 unset _lib
 
+trap ui_on_int INT
+
 # Never stop silently: remember the last failing command and report it if it ends the run.
 trap '_fw_line=$LINENO _fw_src=${BASH_SOURCE[0]##*/} _fw_cmd=$BASH_COMMAND' ERR
 trap '_fw_rc=$?
+  spin_stop; ui_cursor_show
   if ((_fw_rc != 0 && _fw_rc != 130)) && [[ ${FAWWK_DIED:-0} != 1 && -n ${_fw_cmd-} ]]; then
     err "Fawwk stopped unexpectedly (exit $_fw_rc) at $_fw_src:$_fw_line"
     err "Failed command: $_fw_cmd"
@@ -21,36 +24,46 @@ trap '_fw_rc=$?
   fi' EXIT
 
 usage() {
-  cat <<EOF
-${C_BOLD}Fawwk${C_RESET} v$FAWWK_VERSION: deploy git repos to containers on this server
+  # shellcheck disable=SC1090
+  [[ -r $FAWWK_CONF ]] && source "$FAWWK_CONF" 2>/dev/null
+  ui_banner
+  local A=$C_ACCENT R=$C_RESET M=$C_MUTED B=$C_BOLD
+  c() { printf '  %s%-34s%s %s\n' "$A" "$1" "$R" "$2"; }
+  h() { printf '\n %s%s%s\n' "$B" "$1" "$R"; }
+  {
+    h "Getting started"
+    printf '  %s1.%s %ssudo fawwk setup%s      prepare this server (once)\n' "$M" "$R" "$A" "$R"
+    printf '  %s2.%s %ssudo fawwk create%s     connect a GitHub repo and deploy it\n' "$M" "$R" "$A" "$R"
+    printf '  %s3.%s %sgit push%s              redeploys automatically within a minute\n' "$M" "$R" "$A" "$R"
 
-${C_BOLD}Server${C_RESET}
-  setup                         Prepare this server (run once, safe to re-run)
-  doctor                        Check the server, DNS and every app
-  proxy [status|reload|logs|config]
-  update                        Update Fawwk itself
+    h "Server"
+    c "setup" "Prepare this server (safe to re-run)"
+    c "doctor" "Check the server, DNS and every app"
+    c "proxy [status|reload|logs|config]" "The HTTPS proxy (Caddy)"
+    c "update" "Update Fawwk itself"
 
-${C_BOLD}Apps${C_RESET}
-  create [name]                 Connect a repo and deploy it (guided)
-  deploy <app>                  Pull the latest commit and redeploy
-  list                          All apps and their state
-  info <app>                    Details for one app
-  logs <app> [-f] [-n N] [--build]
-  restart | stop | start <app>
-  rollback <app> [deploy-id]    Go back to an earlier version
-  history <app>                 Recent deploys
-  exec <app> [command]          Shell (or a command) inside the container
-  remove <app> [--yes]          Delete an app
+    h "Apps"
+    c "create [name]" "Connect a repo and deploy it (guided)"
+    c "deploy <app>" "Pull the latest commit and redeploy"
+    c "list" "All apps and their state"
+    c "info <app>" "Details for one app"
+    c "logs <app> [-f] [-n N] [--build]" "App logs, or the last build log"
+    c "restart | stop | start <app>" "Zero-downtime restart, stop, start"
+    c "rollback <app> [deploy-id]" "Go back to an earlier version"
+    c "history <app>" "Recent deploys"
+    c "exec <app> [command]" "Shell (or a command) inside the container"
+    c "remove <app> [--yes]" "Delete an app"
 
-${C_BOLD}Settings${C_RESET}
-  env <app> [show|set|unset|import|edit|check]
-  domain <app> [list|add|rm] [domain[/path]]
-  port <app> [port]
-  health <app> [path|off]
-  autodeploy <app> [on|off]
+    h "Settings"
+    c "env <app> [show|set|unset|...]" "Environment variables"
+    c "domain <app> [list|add|rm]" "Domains and paths"
+    c "port <app> [port]" "Port the app listens on"
+    c "health <app> [path|off]" "Health check path"
+    c "autodeploy <app> [on|off]" "Redeploy on every push"
 
-Run ${C_BOLD}fawwk <command> --help${C_RESET} for details. Most commands need sudo.
-EOF
+    printf '\n  %s%s fawwk <command> --help for details %s most commands need sudo%s\n\n' "$M" "$G_ARROW" "$G_SEP" "$R"
+  } >&2
+  unset -f c h
 }
 
 main() {
@@ -80,8 +93,8 @@ main() {
     doctor | check) cmd_doctor "$@" ;;
     update | self-update) cmd_update "$@" ;;
     version | -v | --version) echo "$FAWWK_VERSION" ;;
-    help | -h | --help) usage ;;
-    *) err "Unknown command: $cmd"; usage >&2; exit 1 ;;
+    help | -h | --help) usage 2>&1 ;;
+    *) err "Unknown command: $cmd"; hint "See all commands with: fawwk help"; exit 1 ;;
   esac
 }
 
