@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# fawwk — git access: public repos, personal access tokens, per-app deploy keys.
+
+# owner/name, git@host:owner/name(.git) or https://host/owner/name(.git) -> https://host/owner/name.git
+repo_https() {
+  local u=${1%/}
+  [[ $u =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] && u="https://github.com/$u"
+  [[ $u =~ ^git@([^:]+):(.+)$ ]] && u="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  [[ $u =~ ^ssh://git@([^/]+)/(.+)$ ]] && u="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  [[ $u == *.git ]] || u="$u.git"
+  printf '%s' "$u"
+}
+
+repo_ssh() {
+  local u
+  u=$(repo_https "$1")
+  [[ $u =~ ^https?://([^/]+)/(.+)$ ]] && printf 'git@%s:%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+# https://github.com/owner/name.git -> owner/name
+repo_path() {
+  local u
+  u=$(repo_https "$1")
+  u=${u#*://*/}
+  printf '%s' "${u%.git}"
+}
+
+repo_slug() { local p; p=$(repo_path "$1"); printf '%s' "${p##*/}"; }
+
+valid_repo() {
+  [[ $(repo_https "$1") =~ ^https?://[^/]+/[^/]+/.+\.git$ ]] || { warn "Use a URL like https://github.com/you/app or owner/name"; return 1; }
+}
+
+# Prepares the environment so git uses the loaded app's credentials and never prompts.
+git_env() {
+  local d
+  d=$(app_dir "$A_NAME")
+  export GIT_TERMINAL_PROMPT=0
+  unset GIT_ASKPASS GIT_SSH_COMMAND FAWWK_GIT_TOKEN_FILE
+  case $A_AUTH in
+    token)
+      export FAWWK_GIT_TOKEN_FILE="$d/token"
+      export GIT_ASKPASS="$FAWWK_HOME/lib/askpass.sh"
+      ;;
+    deploykey)
+      export GIT_SSH_COMMAND="ssh -i $d/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+      ;;
+  esac
+}
+
+git_url() { if [[ $A_AUTH == deploykey ]]; then repo_ssh "$A_REPO"; else repo_https "$A_REPO"; fi; }
+
+# git_cmd ARGS... — git with the app's credentials and no credential helpers.
+git_cmd() { (git_env; timeout 300 git -c credential.helper= "$@"); }
+
+# Returns 0 if the repo is readable with the current A_AUTH.
+git_probe() { git_cmd ls-remote --heads "$(git_url)" >/dev/null 2>&1; }
+
+git_default_branch() {
+  git_cmd ls-remote --symref "$(git_url)" HEAD 2>/dev/null |
+    awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}'
+}
+
+git_remote_head() {
+  git_cmd ls-remote "$(git_url)" "refs/heads/$A_BRANCH" 2>/dev/null | awk '{print $1; exit}'
+}
+
+git_branch_exists() { [[ -n $(git_remote_head) ]]; }
+
+# Clones or updates the app's checkout to the tip of A_BRANCH. Prints the commit hash.
+git_sync() {
+  local src url
+  src="$(app_var "$A_NAME")/src"
+  url=$(git_url)
+  if [[ -d $src/.git ]]; then
+    git -C "$src" remote set-url origin "$url"
+    git_cmd -C "$src" fetch -q --depth 1 origin "$A_BRANCH" >&2 || return 1
+    git -C "$src" reset -q --hard FETCH_HEAD >&2 || return 1
+    git -C "$src" clean -q -fdx >&2
+  else
+    rm -rf "$src"
+    mkdir -p "${src%/*}"
+    git_cmd clone -q --depth 1 --branch "$A_BRANCH" "$url" "$src" >&2 || return 1
+  fi
+  if [[ -f $src/.gitmodules ]]; then
+    git_cmd -C "$src" submodule update -q --init --recursive --depth 1 >&2 || warn "Some git submodules couldn't be fetched."
+  fi
+  git -C "$src" rev-parse HEAD
+}
+
+git_subject() { git -C "$(app_var "$A_NAME")/src" log -1 --format=%s 2>/dev/null || true; }
+
+# Creates (once) a read-only SSH deploy key for the app and prints the public half.
+deploykey_create() {
+  local d
+  d=$(app_dir "$A_NAME")
+  mkdir -p "$d"
+  chmod 700 "$d"
+  [[ -f $d/deploy_key ]] || ssh-keygen -q -t ed25519 -N '' -C "fawwk-$A_NAME@$(hostname)" -f "$d/deploy_key"
+  chmod 600 "$d/deploy_key"
+  cat "$d/deploy_key.pub"
+}
+
+# Interactive: make sure the server can read A_REPO, setting A_AUTH (public|token|deploykey).
+git_setup_access() {
+  local preset=${1-} token_file=${2-} pick tries pub d host
+  d=$(app_dir "$A_NAME")
+  host=$(repo_https "$A_REPO"); host=${host#*://}; host=${host%%/*}
+
+  A_AUTH=public
+  if [[ -z $preset ]] && git_probe; then ok "Public repository, no credentials needed"; return 0; fi
+
+  if [[ -z $preset ]]; then
+    warn "Can't read the repo anonymously (it's private, or the URL is wrong)."
+    choose pick "How should this server get access?" 1 \
+      "Deploy key: read-only access to this one repo (recommended)" \
+      "Personal access token"
+    [[ $pick == 1 ]] && preset=deploykey || preset=token
+  fi
+
+  if [[ $preset == deploykey ]]; then
+    A_AUTH=deploykey
+    pub=$(deploykey_create)
+    step "Add this deploy key to the repo"
+    if [[ $host == github.com ]]; then
+      info "Open: https://github.com/$(repo_path "$A_REPO")/settings/keys/new"
+    else
+      info "In your git host, add it as a read-only deploy key for $(repo_path "$A_REPO")"
+    fi
+    info "Title: fawwk-$(hostname)   (leave 'Allow write access' unchecked)"
+    printf '\n%s\n\n' "$pub" >&2
+    for tries in 1 2 3 4 5; do
+      is_interactive && read -r -p "  Press Enter once the key is added... " _
+      git_probe && { ok "Repository access works (deploy key)"; return 0; }
+      is_interactive || break
+      warn "Still can't read the repo. Check the key was saved on the right repo (attempt $tries/5)."
+    done
+    die "No access to $A_REPO with the deploy key."
+  fi
+
+  A_AUTH=token
+  mkdir -p "$d"
+  chmod 700 "$d"
+  if [[ -n $token_file ]]; then
+    install -m 600 "$token_file" "$d/token"
+  else
+    info "Create a token with read access to the repo's contents"
+    [[ $host == github.com ]] && info "(GitHub: Settings → Developer settings → Fine-grained tokens → Contents: Read-only)"
+    for tries in 1 2 3; do
+      local tok
+      ask_secret tok "Paste the token"
+      (umask 077; printf '%s\n' "$tok" >"$d/token")
+      git_probe && { ok "Repository access works (token)"; return 0; }
+      warn "That token can't read $(repo_path "$A_REPO") (attempt $tries/3)."
+    done
+  fi
+  git_probe || die "No access to $A_REPO with the token."
+  ok "Repository access works (token)"
+}
