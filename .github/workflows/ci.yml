@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: shellcheck -S warning bin/fawwk lib/*.sh install.sh tests/run.sh
+
+      - name: Webhook receiver compiles
+        run: python3 -m py_compile lib/hooks.py
+
+      - name: Tests
+        # Sandboxed (temp dirs, stub docker), but the commands under test check for root.
+        run: sudo -E env "PATH=$PATH" tests/run.sh
