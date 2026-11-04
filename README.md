@@ -88,11 +88,6 @@ sudo fawwk create api --repo you/api --domain "api.example.com example.com/api" 
   --port 8000 --health /health --env-file ./api.env --deploy-key --yes
 ```
 
-## Examples
-
-- [Express API + React frontend](examples/express-react): two Dockerfiles deployed as two apps on one
-  domain (`example.com` and `example.com/api`).
-
 ## Everyday commands
 
 ```bash
