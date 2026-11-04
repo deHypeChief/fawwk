@@ -799,10 +799,16 @@ test_db_real_docker() {
   FAWWK_YES=1
   local sfx=$RANDOM
   DB_TEST_NAMES="pg$sfx rd$sfx mg$sfx"
-  trap 'for n in $DB_TEST_NAMES; do docker rm -f "fawwk-db-$n" "fawwk-db-$n-restore" >/dev/null 2>&1; docker volume rm "fawwk_db_$n" >/dev/null 2>&1; done; rm -rf "$SB"' EXIT
+  # On the way out (pass or fail): what each database container was doing, then clean up. The harness
+  # only shows a test's output when it fails, so this explains failures in CI without noise otherwise.
+  trap 'for n in $DB_TEST_NAMES; do
+      docker ps -a --filter "name=^fawwk-db-$n\$" --format "      container {{.Names}}: {{.Status}}"
+      docker logs --tail 15 "fawwk-db-$n" 2>&1 | sed "s/^/        /"
+      docker rm -f "fawwk-db-$n" "fawwk-db-$n-restore" >/dev/null 2>&1; docker volume rm "fawwk_db_$n" >/dev/null 2>&1
+    done; rm -rf "$SB"' EXIT
   local pw=()
 
-  db_create "pg$sfx" --type postgres --link api 2>/dev/null
+  db_create "pg$sfx" --type postgres --link api
   has "$(cat "$(app_envfile api)")" "DATABASE_URL=postgresql://pg$sfx:"
   db_load "pg$sfx"; pw+=("$D_PASSWORD")
   pg() { db_exec "fawwk-db-pg$sfx" psql -tA -U "$D_USER" -h 127.0.0.1 "$D_DATABASE" -c "$1"; }
@@ -813,7 +819,7 @@ test_db_real_docker() {
   eq "$(pg 'select v from t')" kept
   eq "$(pg "select count(*) from information_schema.tables where table_name = 'later'")" 0
 
-  db_create "rd$sfx" --type redis 2>/dev/null
+  db_create "rd$sfx" --type redis
   db_load "rd$sfx"; pw+=("$D_PASSWORD")
   rd() { db_exec "fawwk-db-rd$sfx" redis-cli "$@"; }
   eq "$(docker exec "fawwk-db-rd$sfx" redis-cli get x 2>&1 | head -c 6)" NOAUTH
@@ -826,7 +832,7 @@ test_db_real_docker() {
   eq "$(rd get k)" kept   # survives a restart (append-only file rebuilt from the snapshot)
 
   if grep -qw avx /proc/cpuinfo; then
-    db_create "mg$sfx" --type mongodb 2>/dev/null
+    db_create "mg$sfx" --type mongodb
     db_load "mg$sfx"
     mg() { db_exec "fawwk-db-mg$sfx" mongosh --quiet -u "$D_USER" -p "$D_PASSWORD" --authenticationDatabase admin "$D_DATABASE" --eval "$1"; }
     mg 'db.c.insertOne({v: "kept"})' >/dev/null
