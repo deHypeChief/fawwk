@@ -349,6 +349,26 @@ cmd_health() {
   ok "Health check: ${p:-any HTTP response} (used from the next deploy)"
 }
 
+# ---------- build method ----------
+cmd_build() {
+  app_require_arg "${1-}" build; require_root build; require_setup
+  app_load "$1"
+  local t=${2-} ctx
+  ctx=$(build_context)
+  if [[ -z $t ]]; then
+    info "Build method for $1: ${A_BUILD:-auto}"
+    [[ -d $ctx ]] && hint "Next deploy: $(build_describe "$(build_resolve "$ctx" "${A_BUILD:-auto}")" "$ctx")"
+    hint "Change with: fawwk build $1 auto|dockerfile|nixpacks|static"
+    return 0
+  fi
+  [[ $t =~ ^(auto|dockerfile|nixpacks|static)$ ]] || die "Use: fawwk build $1 auto|dockerfile|nixpacks|static"
+  app_set A_BUILD "$t"
+  ok "Build method for $1: $t (used from the next deploy)"
+  if [[ -n $A_IMAGE ]] && confirm "Redeploy $1 now?" Y; then
+    deploy_app "$1" || die "Deploy failed; the previous version is still live."
+  fi
+}
+
 # ---------- auto-deploy ----------
 cmd_autodeploy() {
   app_require_arg "${1-}" autodeploy; require_root autodeploy; require_setup

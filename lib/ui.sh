@@ -167,6 +167,8 @@ spin_start() {
   local hang=$UI_HANG
   ui_lead; lead=$UI_LEAD; UI_HANG=$hang
   ui_cursor_hide
+  # Keys typed while it spins would echo and break the line; hide them until spin_stop.
+  [[ -t 0 ]] && stty -echo 2>/dev/null || true
   (
     set +eE; trap - ERR EXIT INT; trap 'exit 0' TERM
     local i=0 start=$SECONDS last cols el
@@ -191,6 +193,7 @@ spin_stop() {
   kill "$UI_SPIN_PID" 2>/dev/null || true
   wait "$UI_SPIN_PID" 2>/dev/null || true
   UI_SPIN_PID=''
+  [[ -t 0 ]] && stty echo 2>/dev/null || true
   printf '\r\e[J' >&2
   ui_cursor_show
 }

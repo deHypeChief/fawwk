@@ -114,9 +114,10 @@ cmd_create() {
     is_interactive || die "Folder not found: $A_DIR"
   done
   A_BUILD=$build
-  detected=$build
-  [[ $detected == auto ]] && detected=$(build_detect "$ctx")
+  detected=$(build_resolve "$ctx" "$build")
   ok "$(build_describe "$detected" "$ctx")"
+  # Catch a Dockerfile that can't build (e.g. it COPYs a lock file that isn't committed) before deploying.
+  [[ $detected == dockerfile ]] && { build_warn_dockerfile "$ctx" || true; }
   if [[ $detected == nixpacks ]] && ! command -v nixpacks >/dev/null 2>&1; then
     die "This repo has no Dockerfile and Nixpacks isn't installed. Re-run: sudo fawwk setup"
   fi

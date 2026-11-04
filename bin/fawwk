@@ -59,6 +59,7 @@ usage() {
     c "domain <app> [list|add|rm]" "Domains and paths"
     c "port <app> [port]" "Port the app listens on"
     c "health <app> [path|off]" "Health check path"
+    c "build <app> [method]" "auto, dockerfile, nixpacks or static"
     c "autodeploy <app> [on|off]" "Redeploy on every push"
 
     printf '\n  %s%s fawwk <command> --help for details %s most commands need sudo%s\n\n' "$M" "$G_ARROW" "$G_SEP" "$R"
@@ -88,6 +89,7 @@ main() {
     port) cmd_port "$@" ;;
     health) cmd_health "$@" ;;
     autodeploy | auto) cmd_autodeploy "$@" ;;
+    build) cmd_build "$@" ;;
     sync) cmd_sync "$@" ;;
     proxy) cmd_proxy "$@" ;;
     doctor | check) cmd_doctor "$@" ;;

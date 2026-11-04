@@ -22,6 +22,27 @@ build_dockerfile() {
   return 1
 }
 
+# build_dockerfile_missing DIR — prints (one per line) files the Dockerfile COPYs or ADDs that aren't
+# in the repo, e.g. a lock file that was never committed. Such a Dockerfile can't build.
+build_dockerfile_missing() {
+  local d=$1 df line rest t srcs toks i
+  df=$(build_dockerfile "$d") || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    [[ ${line^^} =~ ^[[:space:]]*(COPY|ADD)[[:space:]] ]] || continue
+    rest=${line#*[[:space:]]}
+    [[ $rest == *--from* || $rest == *'<<'* || $rest =~ ^[[:space:]]*\[ ]] && continue
+    srcs=()
+    read -ra toks <<<"$rest"
+    for t in "${toks[@]}"; do [[ $t == --* ]] || srcs+=("$t"); done
+    for ((i = 0; i < ${#srcs[@]} - 1; i++)); do
+      t=${srcs[i]}
+      [[ $t == *[*?\[]* || $t == *'$'* || $t == *://* ]] && continue
+      [[ -e $d/$t ]] || printf '%s\n' "$t"
+    done
+  done <"$df"
+}
+
 # build_detect DIR -> dockerfile | static | nixpacks
 build_detect() {
   local d=$1
@@ -34,15 +55,36 @@ build_detect() {
 # build_describe TYPE [DIR]
 build_describe() {
   local name=Dockerfile f
-  if [[ $1 == dockerfile && -n ${2-} ]] && f=$(build_dockerfile "$2"); then name=${f##*/}; fi
+  if [[ -n ${2-} ]] && f=$(build_dockerfile "$2"); then name=${f##*/}; else name=''; fi
   case $1 in
     dockerfile)
       if [[ $name == Dockerfile ]]; then echo "Dockerfile found, building with Docker"
-      else echo "$name found, building with Docker (tip: rename it to 'Dockerfile', the standard name)"
+      else echo "${name:-Dockerfile} found, building with Docker (tip: rename it to 'Dockerfile', the standard name)"
       fi ;;
     static)     echo "Static site (index.html), served by Caddy" ;;
-    nixpacks)   echo "No Dockerfile, auto-detecting the stack with Nixpacks" ;;
+    nixpacks)
+      if [[ -n $name ]]; then echo "Building with Nixpacks (auto-detects the stack; $name is ignored)"
+      else echo "No Dockerfile, auto-detecting the stack with Nixpacks"
+      fi ;;
   esac
+}
+
+# build_resolve DIR TYPE — the build type to actually use ("auto": a Dockerfile always wins).
+build_resolve() {
+  local type=${2:-auto}
+  [[ $type == auto ]] && type=$(build_detect "$1")
+  printf '%s' "$type"
+}
+
+# Warns about a Dockerfile that can't build; used by create and before every Dockerfile build.
+build_warn_dockerfile() {
+  local d=$1 missing name
+  missing=$(build_dockerfile_missing "$d")
+  [[ -n $missing ]] || return 0
+  name=$(build_dockerfile "$d"); name=${name##*/}
+  missing=$(printf '%s' "$missing" | paste -sd, - | sed 's/,/, /g')
+  warn "$name copies $missing, which isn't in the repo, so a Docker build would fail."
+  return 1
 }
 
 # Best guess at the port the app listens on.
@@ -80,8 +122,8 @@ build_image() {
   envf=$(app_envfile "$A_NAME")
   [[ -d $ctx ]] || { err "Folder '$A_DIR' doesn't exist in the repo."; return 1; }
 
-  type=$A_BUILD
-  [[ -z $type || $type == auto ]] && type=$(build_detect "$ctx")
+  type=$(build_resolve "$ctx" "${A_BUILD:-auto}")
+  [[ $type == dockerfile ]] && { build_warn_dockerfile "$ctx" || true; }
   info "$(build_describe "$type" "$ctx")"
 
   # App env is available at build time too (needed by e.g. Next.js NEXT_PUBLIC_* vars).

@@ -24,7 +24,8 @@ git push              # redeploys automatically within a minute
 - **Proxy:** [Caddy](https://caddyserver.com) runs in a container, gets and renews Let's Encrypt
   certificates, and routes each domain or path to the right app container. App containers are never
   exposed to the internet directly.
-- **Builds:** a `Dockerfile` in the repo is used if present. A plain static site (`index.html`, no
+- **Builds:** a `Dockerfile` in the repo is used if present (any casing, e.g. `DOCKERFILE`). Before building,
+  Fawwk checks that every file it `COPY`s is actually in the repo (a missing lock file is the usual culprit). A plain static site (`index.html`, no
   `package.json`) is served by Caddy. Anything else (Node, Python, Go, Ruby, PHP...) is auto-detected
   with [Nixpacks](https://nixpacks.com).
 - **Zero-downtime deploys:** the new container must answer HTTP on its port before traffic moves to it.
@@ -113,6 +114,7 @@ fawwk domain api rm example.com/api
 fawwk port api 8080
 fawwk health api /healthz
 fawwk autodeploy api off
+fawwk build api nixpacks            # build method: auto | dockerfile | nixpacks | static
 
 fawwk doctor                        # server, DNS and app health check
 fawwk proxy config | reload | logs
