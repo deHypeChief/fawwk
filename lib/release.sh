@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# fawwk — deploying: fetch → build → start new container → health check → switch traffic → retire old.
+# fawwk — deploying: fetch → build → release command → start new container → health check →
+# switch traffic → retire old.
 
-deploy_id() { date +%Y%m%d-%H%M%S; }
+# Unique even for two operations in the same second (a restart right before a deploy, say):
+# the id names the container and image tag, so a clash would remove the live container.
+deploy_id() { printf '%s-%s' "$(date +%Y%m%d-%H%M%S)" "$(openssl rand -hex 2 2>/dev/null || printf '%04x' $((RANDOM % 65536)))"; }
 
 # history: one TSV line per deploy: id, commit, image, status, note
 history_add() {
@@ -12,9 +15,31 @@ history_file() { printf '%s/history' "$(app_dir "$A_NAME")"; }
 
 is_worker() { [[ -z $A_ROUTES ]]; }
 
+# volume_name APP PATH — the Docker volume that holds PATH for APP, e.g. fawwk_api_app-data.
+volume_name() {
+  local p=${2#/}
+  p=${p//[^A-Za-z0-9_.-]/-}
+  printf 'fawwk_%s_%s' "$1" "${p:-root}"
+}
+
+# Sets RUN_ARGS: what every container of the loaded app gets (env, network, volumes, limits).
+app_run_args() {
+  local envf v
+  envf=$(app_envfile "$A_NAME")
+  [[ -f $envf ]] || install -m 600 /dev/null "$envf"
+  RUN_ARGS=(--network "$FAWWK_NETWORK" --label "fawwk.app=$A_NAME" --env-file "$envf"
+    --security-opt no-new-privileges:true --pids-limit 4096)
+  [[ -n ${A_MEMORY-} ]] && RUN_ARGS+=(--memory "$A_MEMORY")
+  [[ -n ${A_CPUS-} ]] && RUN_ARGS+=(--cpus "$A_CPUS")
+  for v in ${A_VOLUMES-}; do RUN_ARGS+=(-v "$(volume_name "$A_NAME" "$v"):$v"); done
+  if ! is_worker && ! env_has "$envf" PORT; then RUN_ARGS+=(-e "PORT=$A_PORT"); fi
+  return 0
+}
+
 # Waits until the container answers HTTP on A_PORT (or, for workers, stays up for 10s).
 health_wait() {
-  local c=$1 ip code='' state restarts deadline=$((SECONDS + HEALTH_TIMEOUT)) url
+  local c=$1 ip code='' state restarts timeout=${A_HEALTH_TIMEOUT:-$HEALTH_TIMEOUT} deadline url
+  deadline=$((SECONDS + timeout))
   if is_worker; then
     spin_start "Worker app (no domain): checking it stays running"
     sleep 10
@@ -30,6 +55,8 @@ health_wait() {
     if [[ $state == exited || $state == dead || $state == gone ]] || ((restarts > 1)); then
       spin_stop
       err "The container crashed (state: $state, restarts: $restarts)."
+      [[ $(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null) == true ]] &&
+        hint "It ran out of memory (limit: ${A_MEMORY:-none}). Raise it with: fawwk limits $A_NAME memory=1g"
       return 1
     fi
     ip=$(docker inspect -f "{{with index .NetworkSettings.Networks \"$FAWWK_NETWORK\"}}{{.IPAddress}}{{end}}" "$c" 2>/dev/null || true)
@@ -45,10 +72,35 @@ health_wait() {
     sleep 2
   done
   spin_stop
-  err "No healthy answer on port $A_PORT within ${HEALTH_TIMEOUT}s (last HTTP code: ${code:-none})."
+  err "No healthy answer on port $A_PORT within ${timeout}s (last HTTP code: ${code:-none})."
   hint "The app must listen on 0.0.0.0:$A_PORT. It receives PORT=$A_PORT in its environment."
-  hint "Wrong port? fawwk port $A_NAME <port>"
+  hint "Wrong port? fawwk port $A_NAME <port>   $G_SEP   Slow to boot? fawwk health $A_NAME --timeout 180"
   return 1
+}
+
+# release_command IMAGE ID LOG — runs A_RELEASE (e.g. database migrations) in a one-off container
+# from the new image, before it gets any traffic. A failure stops the deploy.
+release_command() {
+  local image=$1 id=$2 log=$3 rc=0 cname
+  cname="fawwk-$A_NAME-$id-release"
+  [[ -n ${A_RELEASE-} ]] || return 0
+  step "Release command"
+  info "${C_MUTED}\$${C_RESET} $A_RELEASE"
+  app_run_args
+  printf '\n==> release command: %s\n' "$A_RELEASE" >>"$log"
+  docker run --rm --name "$cname" "${RUN_ARGS[@]}" --entrypoint sh "$image" -c "$A_RELEASE" >>"$log" 2>&1 &
+  local pid=$! t0=$SECONDS
+  spin_start "Running" "$log"
+  wait "$pid" || rc=$?
+  spin_stop
+  if ((rc != 0)); then
+    docker rm -f "$cname" >/dev/null 2>&1 || true
+    err "Release command failed (exit $rc) after $((SECONDS - t0))s. Last lines:"
+    tail -n 20 "$log" | ui_quote
+    hint "The current version stays live. Change it with: fawwk release $A_NAME \"<command>\""
+    return 1
+  fi
+  ok "Done ${C_MUTED}in $((SECONDS - t0))s${C_RESET}"
 }
 
 # release_image IMAGE COMMIT ID — zero-downtime swap to a new container running IMAGE.
@@ -56,25 +108,17 @@ release_image() {
   local image=$1 commit=$2 id=$3
   local cname="fawwk-$A_NAME-$id" envf old=$A_CONTAINER old_image=$A_IMAGE old_commit=$A_COMMIT old_state=$A_STATE
   envf=$(app_envfile "$A_NAME")
-  [[ -f $envf ]] || install -m 600 /dev/null "$envf"
-
-  local args=(-d --name "$cname" --network "$FAWWK_NETWORK" --restart unless-stopped
-    --label "fawwk.app=$A_NAME" --label "fawwk.deploy=$id"
-    --log-opt max-size=10m --log-opt max-file=3
-    --env-file "$envf")
-  if ! is_worker; then
-    if env_has "$envf" PORT; then
-      local envport
-      envport=$(grep '^PORT=' "$envf" | tail -n1 | cut -d= -f2 || true)
-      [[ $envport == "$A_PORT" ]] || warn "Your env sets PORT=$envport but the app is routed to port $A_PORT."
-    else
-      args+=(-e "PORT=$A_PORT")
-    fi
+  app_run_args
+  if ! is_worker && env_has "$envf" PORT; then
+    local envport
+    envport=$(grep '^PORT=' "$envf" | tail -n1 | cut -d= -f2 || true)
+    [[ $envport == "$A_PORT" ]] || warn "Your env sets PORT=$envport but the app is routed to port $A_PORT."
   fi
 
   step "Starting new container"
   docker rm -f "$cname" >/dev/null 2>&1 || true
-  if ! docker run "${args[@]}" "$image" >/dev/null; then
+  if ! docker run -d --name "$cname" --restart unless-stopped --label "fawwk.deploy=$id" \
+    --log-opt max-size=10m --log-opt max-file=3 "${RUN_ARGS[@]}" "$image" >/dev/null; then
     err "Docker couldn't start the container."
     return 1
   fi
@@ -104,21 +148,28 @@ release_image() {
     sleep 3   # let in-flight requests on the old container finish
   fi
 
-  # Retire every other container of this app.
+  # Retire every other container of this app (release-command containers clean up after themselves).
   local c
   while IFS= read -r c; do
-    [[ -z $c || $c == "$cname" ]] && continue
+    [[ -z $c || $c == "$cname" || $c == *-release ]] && continue
     docker stop -t 15 "$c" >/dev/null 2>&1 || true
     docker rm -f "$c" >/dev/null 2>&1 || true
   done < <(docker ps -a --filter "label=fawwk.app=$A_NAME" --format '{{.Names}}')
   return 0
 }
 
-# deploy_app NAME — the full pipeline. Returns non-zero on failure (the old version stays live).
+# deploy_app NAME [SKIP_IF_AT] — the full pipeline. Returns non-zero on failure (the old version
+# stays live). Automated deploys pass the commit they were triggered for as SKIP_IF_AT: it's
+# checked after taking the lock, so a webhook and the timer racing for one push deploy it once.
 deploy_app() {
-  local name=$1 id commit log subject
-  app_load "$name"
-  app_lock "$name"
+  local name=$1 skip_if_at=${2-} id commit log subject
+  app_load_locked "$name"
+  if [[ -n $skip_if_at && ( $skip_if_at == "$A_COMMIT" || $skip_if_at == "$A_FAILED_COMMIT" ) ]]; then
+    info "$name is already at ${skip_if_at:0:7}, nothing to do"
+    DEPLOY_SKIPPED=1
+    return 0
+  fi
+  DEPLOY_SKIPPED=0
   id=$(deploy_id)
   mkdir -p "$(app_var "$name")/logs"
   log="$(app_var "$name")/logs/$id.log"
@@ -141,6 +192,15 @@ deploy_app() {
   if ! build_image "$id" "$log"; then
     app_set A_FAILED_COMMIT "$commit"
     history_add "$id" "$commit" - failed "build failed"
+    deploy_cleanup
+    return 1
+  fi
+
+  if ! release_command "$BUILT_IMAGE" "$id" "$log"; then
+    app_set A_FAILED_COMMIT "$commit"
+    history_add "$id" "$commit" "$BUILT_IMAGE" failed "release command failed"
+    docker rmi "$BUILT_IMAGE" >/dev/null 2>&1 || true
+    deploy_cleanup
     return 1
   fi
 
@@ -148,13 +208,28 @@ deploy_app() {
     app_set A_FAILED_COMMIT "$commit"
     history_add "$id" "$commit" "$BUILT_IMAGE" failed "did not start"
     docker rmi "$BUILT_IMAGE" >/dev/null 2>&1 || true
+    deploy_cleanup
     return 1
   fi
 
   app_set A_FAILED_COMMIT ''
   history_add "$id" "$commit" "$BUILT_IMAGE" ok "${subject:0:60}"
   images_prune
+  deploy_cleanup
   deploy_summary
+}
+
+# Keeps disk use flat over months of deploys: old build logs, untagged image layers and build cache
+# older than a week. Never touches tagged images, so rollback keeps working.
+deploy_cleanup() {
+  local logs n=0 f
+  logs="$(app_var "$A_NAME")/logs"
+  while IFS= read -r f; do
+    n=$((n + 1))
+    ((n > KEEP_LOGS)) && rm -f "$f"
+  done < <(ls -1t "$logs"/*.log 2>/dev/null || true)
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
 }
 
 deploy_summary() {
@@ -163,7 +238,7 @@ deploy_summary() {
     lines+=("${C_GREEN}${G_DOT}${C_RESET} Running as a background worker (no domain)")
   else
     for r in $A_ROUTES; do lines+=("${C_GREEN}${G_DOT}${C_RESET} ${C_ACCENT2}$(route_url "$r")${C_RESET}"); done
-    lines+=("" "${C_MUTED}HTTPS certificates are issued on the first visit once DNS points here.${C_RESET}")
+    lines+=("" "${C_MUTED}HTTPS certificates are requested automatically as soon as DNS points here.${C_RESET}")
   fi
   [[ -n ${A_COMMIT-} ]] && lines+=("${C_MUTED}commit ${A_COMMIT:0:7} $G_SEP logs: fawwk logs $A_NAME -f${C_RESET}")
   printf '\n' >&2

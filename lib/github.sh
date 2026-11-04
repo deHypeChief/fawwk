@@ -203,16 +203,27 @@ cmd_hooks_run() {
         app_load "$name"
         [[ $(repo_path "$A_REPO" | tr 'A-Z' 'a-z') == "$repo" && $A_BRANCH == "$branch" ]] || exit 0
         [[ $A_AUTO == yes && $A_STATE != stopped ]] || exit 0
-        [[ -n $sha && $sha == "$A_COMMIT" ]] && exit 0
-        printf '[%s] %s: deploying %s\n' "$(ts)" "$name" "${sha:0:7}" >>"$FAWWK_LOG/hooks.log"
-        if deploy_app "$name" >>"$FAWWK_LOG/$name.log" 2>&1; then
-          printf '[%s] %s: deployed %s\n' "$(ts)" "$name" "${sha:0:7}" >>"$FAWWK_LOG/hooks.log"
-        else
-          printf '[%s] %s: deploy FAILED (see %s)\n' "$(ts)" "$name" "$FAWWK_LOG/$name.log" >>"$FAWWK_LOG/hooks.log"
-        fi
+        auto_deploy "$name" "$sha" hooks.log
       ) || true
     done < <(app_names)
   done
+}
+
+# gh_update_hook_urls — after the panel domain changes, points every connected GitHub App's
+# webhook at the new https://<panel>/hooks/github (GitHub would keep sending to the old one).
+gh_update_hook_urls() {
+  local src url="https://$PANEL_HOST/hooks/github"
+  gh_have_sources || return 0
+  gh_need_jq >/dev/null
+  while IFS= read -r src; do
+    [[ -z $src ]] && continue
+    if gh_api "$(gh_jwt "$src")" PATCH /app/hook/config "{\"url\":\"$url\"}" >/dev/null 2>&1; then
+      ok "GitHub App $src now sends webhooks to $url"
+    else
+      gh_load "$src"
+      warn "Couldn't update $src's webhook URL. Set it to $url at $GH_HTML_URL"
+    fi
+  done < <(gh_sources)
 }
 
 # ---------- `fawwk github` ----------
@@ -385,11 +396,13 @@ github_install() {
   jwt=$(gh_jwt "$src")
   n=$(gh_api "$jwt" GET /app/installations 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
   ((n > 0)) && { ok "Already installed. Use the link to add more repos any time."; return 0; }
+  local jwt_at=$SECONDS
   deadline=$((SECONDS + 900))
   spin_start "Waiting for you to install it (ctrl+c to skip)"
   while ((SECONDS < deadline)); do
     sleep 3
-    ((SECONDS % 60 < 3)) && jwt=$(gh_jwt "$src")
+    # JWTs last 9 minutes; get a fresh one well before that.
+    ((SECONDS - jwt_at >= 300)) && { jwt=$(gh_jwt "$src"); jwt_at=$SECONDS; }
     n=$(gh_api "$jwt" GET /app/installations 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
     ((n > 0)) && break
   done
@@ -409,7 +422,7 @@ github_remove() {
   while IFS= read -r name; do
     [[ -z $name ]] && continue
     ( app_load "$name"; [[ $A_AUTH == github && $A_GH_SOURCE == "$src" ]] ) &&
-      die "App '$name' uses $src. Remove it, or switch its access, first."
+      die "App '$name' uses $src. Remove it, or switch its access first: fawwk access $name deploykey"
   done < <(app_names)
   confirm "Forget $src on this server?" N || return 1
   rm -rf "${GH_ETC:?}/$src" "$HOOKS_DIR/secrets/$src"

@@ -39,9 +39,10 @@ cmd_setup() {
   [[ $os_id == ubuntu ]] || warn "Fawwk is built for Ubuntu; this is $os_name. Continuing anyway."
 
   # Re-running setup keeps previous answers as defaults.
-  local DOMAIN='' EMAIL='' PANEL_SUB=''
+  local DOMAIN='' EMAIL='' PANEL_SUB='' PANEL_HOST='' old_panel
   # shellcheck disable=SC1090
   [[ -f $FAWWK_CONF ]] && source "$FAWWK_CONF"
+  old_panel=$PANEL_HOST
 
   ui_banner "Server setup ${G_SEP} Docker, HTTPS proxy, firewall, auto-deploy"
   step "Server details"
@@ -54,7 +55,7 @@ cmd_setup() {
   export DEBIAN_FRONTEND=noninteractive
   spin_start "apt-get install base packages"
   apt-get update -q >/dev/null
-  apt-get install -y -q ca-certificates curl git gnupg jq openssl ufw fail2ban openssh-client unattended-upgrades >/dev/null
+  apt-get install -y -q ca-certificates cron curl git gnupg jq logrotate openssl ufw fail2ban openssh-client unattended-upgrades >/dev/null
   spin_stop
   ok "Base packages"
 
@@ -78,13 +79,18 @@ cmd_setup() {
   # shellcheck disable=SC1090
   source "$FAWWK_CONF"
   ok "Saved to $FAWWK_CONF"
+  setup_logrotate && ok "Fawwk logs rotate weekly (8 weeks kept)"
 
   step "Starting the HTTPS proxy (Caddy)"
   proxy_ensure
   proxy_reload && ok "Caddy is running on ports 80 and 443"
 
   setup_timer
-  hooks_enabled && { step "GitHub webhooks"; hooks_ensure; }
+  if hooks_enabled; then
+    step "GitHub webhooks"
+    hooks_ensure
+    [[ -n $old_panel && $old_panel != "$PANEL_HOST" ]] && gh_update_hook_urls
+  fi
 
   step "DNS"
   info "Create these records with your DNS provider (both pointing to $ip):"
@@ -114,6 +120,18 @@ setup_docker() {
   fi
   spin_start "Installing Docker from the official repository"
   local codename arch
+  # Sensible daemon defaults on a fresh install: rotate every container's logs, and cap the build
+  # cache so months of deploys don't fill the disk. An existing daemon.json is left alone.
+  if [[ ! -f /etc/docker/daemon.json ]]; then
+    mkdir -p /etc/docker
+    cat >/etc/docker/daemon.json <<'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "builder": { "gc": { "enabled": true, "defaultKeepStorage": "10GB" } }
+}
+EOF
+  fi
   codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
   arch=$(dpkg --print-architecture)
   install -m 0755 -d /etc/apt/keyrings
@@ -187,6 +205,22 @@ setup_firewall() {
   ufw allow 443/udp comment 'http3' >/dev/null
   ufw --force enable >/dev/null
   ok "Firewall on: SSH (${ports% }), HTTP (80), HTTPS (443) open; everything else closed"
+}
+
+# Rotates Fawwk's own logs (sync.log, hooks.log, <app>.log, <app>-cron.log).
+setup_logrotate() {
+  [[ -d $LOGROTATE_DIR ]] || return 1
+  cat >"$LOGROTATE_DIR/fawwk" <<EOF
+$FAWWK_LOG/*.log {
+	weekly
+	rotate 8
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+}
+EOF
 }
 
 setup_timer() {

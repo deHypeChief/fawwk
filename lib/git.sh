@@ -36,7 +36,7 @@ git_env() {
   local d
   d=$(app_dir "$A_NAME")
   export GIT_TERMINAL_PROMPT=0
-  unset GIT_ASKPASS GIT_SSH_COMMAND FAWWK_GIT_TOKEN_FILE
+  unset GIT_ASKPASS GIT_SSH_COMMAND FAWWK_GIT_TOKEN_FILE FAWWK_GIT_USER
   case $A_AUTH in
     github)
       # Short-lived installation token from the GitHub App, refreshed as needed.
@@ -47,6 +47,8 @@ git_env() {
     token)
       export FAWWK_GIT_TOKEN_FILE="$d/token"
       export GIT_ASKPASS="$FAWWK_HOME/lib/askpass.sh"
+      # GitHub and GitLab accept any username with a token; Bitbucket needs the real one.
+      [[ -n ${A_TOKEN_USER-} ]] && export FAWWK_GIT_USER=$A_TOKEN_USER
       ;;
     deploykey)
       export GIT_SSH_COMMAND="ssh -i $d/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
@@ -107,9 +109,10 @@ deploykey_create() {
   cat "$d/deploy_key.pub"
 }
 
-# Interactive: make sure the server can read A_REPO, setting A_AUTH (public|token|deploykey).
+# Interactive: make sure the server can read A_REPO, setting A_AUTH (public|github|token|deploykey).
+# git_setup_access [PRESET] [TOKEN_FILE] [TOKEN_USER]
 git_setup_access() {
-  local preset=${1-} token_file=${2-} pick tries pub d host found=""
+  local preset=${1-} token_file=${2-} token_user=${3-} pick tries pub d host found=""
   d=$(app_dir "$A_NAME")
   host=$(repo_https "$A_REPO"); host=${host#*://}; host=${host%%/*}
 
@@ -127,6 +130,11 @@ git_setup_access() {
       return 0
     fi
     spin_stop
+  fi
+  if [[ $preset == public ]]; then
+    git_probe || die "$(repo_path "$A_REPO") can't be read without credentials."
+    ok "Public repository, no credentials needed"
+    return 0
   fi
   if [[ -z $preset ]]; then
     spin_start "Checking access to $(repo_path "$A_REPO")"
@@ -200,6 +208,10 @@ git_setup_access() {
   A_AUTH=token
   mkdir -p "$d"
   chmod 700 "$d"
+  A_TOKEN_USER=$token_user
+  if [[ -z $A_TOKEN_USER && $host == bitbucket.org ]]; then
+    ask A_TOKEN_USER "Bitbucket username (app passwords need it)"
+  fi
   if [[ -n $token_file ]]; then
     install -m 600 "$token_file" "$d/token"
   else
