@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0
+
+### Upgrading from 0.2
+
+```bash
+sudo fawwk update
+```
+
+`update` runs the new post-update step itself. It installs Railpack, and keeps Nixpacks for apps that
+already deployed with it, so nothing changes how an existing app builds. To post deploy status on
+commits, a GitHub App connected before 0.3 needs one extra permission (see below).
+
+### New
+
+- **Managed databases:** `fawwk db create <name> --type postgres|redis|mongodb [--link <app>]`. Each
+  runs in its own container on the private Fawwk network (no published ports), with a random password
+  and a Docker volume. `--link` / `fawwk db link` sets `DATABASE_URL`, `REDIS_URL` or `MONGODB_URL` on an
+  app. Also `info`, `url`, `shell` (psql / redis-cli / mongosh), `start|stop|restart`, `logs`, `remove`.
+  - **Backups:** nightly at 03:17 (`fawwk db schedule HH:MM|off`), keeping the last 7
+    (`DB_KEEP_BACKUPS`); `fawwk db backup <name>` on demand. They're logical (`pg_dump`, a Redis
+    snapshot, `mongodump`), and a failed nightly backup sends a notification.
+  - **Restore:** `fawwk db restore <name> <file|latest>` replaces the contents exactly, after taking a
+    safety backup.
+  - **Integration:** `fawwk backup --with-data` includes a fresh backup of every database, `restore`
+    lists the steps to bring them back, and `doctor` checks each database and the age of its last backup.
+- **Railpack** is the builder for repos without a Dockerfile (Nixpacks is in maintenance mode). It
+  builds through Docker's own BuildKit, with build-time env as BuildKit secrets that never end up in
+  the image. `fawwk build <app> railpack` switches an app that's still on Nixpacks.
+- **Deploy status on GitHub:** each deploy shows on its commit as `fawwk/<app>`: pending, then a check
+  mark linking to the app, or a cross saying what failed. New GitHub connections ask for the permission.
+  For one connected earlier, add "Commit statuses: Read and write" in its settings; the deploy output
+  links there. `fawwk github statuses off` turns it off.
+- **Multi-line env values** (PEM keys, certificates): quoted values may span lines in pasted or imported
+  .env text, `fawwk env <app> set KEY="$(cat key.pem)"` works, and `fawwk env <app> set-file KEY <file>`
+  reads a file. They reach the container, the build and release commands exactly as written.
+
+### Changed
+
+- Builders get env variable names and read the values from their environment, so values no longer
+  appear on `docker build` / `nixpacks` command lines.
+- `fawwk env <app> edit` writes values that need it in quotes, so a value containing ` #` or starting
+  with a quote survives an edit unchanged. Before, the value was cut at the ` #` or lost its quote.
+- `setup` no longer installs Nixpacks on new servers.
+
+### Fixed
+
+- `doctor` crashed on a config without `SETUP_AT` or `SERVER_IP`.
+
 ## 0.2.0
 
 ### Upgrading from 0.1.0

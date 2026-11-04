@@ -27,10 +27,12 @@ git push              # redeploys automatically within a minute
 - **Builds:** a `Dockerfile` in the repo is used if present (any casing, e.g. `DOCKERFILE`). Before building,
   Fawwk checks that every file it `COPY`s is actually in the repo (a missing lock file is the usual culprit). A plain static site (`index.html`, no
   `package.json`) is served by Caddy. Anything else (Node, Python, Go, Ruby, PHP...) is auto-detected
-  with [Nixpacks](https://nixpacks.com).
+  with [Railpack](https://railpack.com), the successor to Nixpacks.
 - **Zero-downtime deploys:** an optional release command (e.g. migrations) runs in the new image first,
   then the new container must answer HTTP on its port before traffic moves to it. If either fails, the
   old version stays live and the error plus logs are shown.
+- **Databases:** Postgres, Redis and MongoDB run next to your apps, reachable only from them, and are
+  backed up every night (`fawwk db`).
 - **Auto-deploy:** with GitHub connected (below), every push deploys within seconds through a webhook.
   A systemd timer also checks each repo's branch every minute, for other git hosts and as a backup.
   A commit that failed to deploy isn't retried until you push again. When a webhook and the timer fire
@@ -55,7 +57,7 @@ This clones Fawwk to `/opt/fawwk`, links the `fawwk` command, and starts `setup`
 | Email | `you@example.com` | Let's Encrypt certificate notices |
 | Panel subdomain | `panel` | reserved for the upcoming web panel |
 
-It installs Docker, Caddy, Nixpacks, UFW (opens only SSH, 80, 443), fail2ban, cron, log rotation for
+It installs Docker, Caddy, Railpack, UFW (opens only SSH, 80, 443), fail2ban, cron, log rotation for
 Fawwk's logs, and a 2GB swap file on servers with under ~4GB RAM. On a fresh Docker install it also caps
 container logs and the build cache (`/etc/docker/daemon.json`). Then it shows the DNS records to create:
 
@@ -81,13 +83,20 @@ This creates a private **GitHub App** owned by you, in one click: open the link 
 - Repos with the app installed need no deploy keys or tokens. Fawwk gets a 1-hour, read-only token for
   one repo each time it fetches code.
 - Every push deploys within seconds. GitHub sends a signed webhook to `https://panel.<domain>/hooks/github`.
+- Every deploy shows on its commit on GitHub: a pending dot while it builds, then a check mark (linking
+  to the app) or a cross saying what failed, as the status `fawwk/<app>`.
 - Several GitHub accounts or orgs? Run `connect` once for each (log in to the other account first).
 
 ```bash
 fawwk github                 # connected accounts and the repos each can reach
 fawwk github install         # add or remove repos
 fawwk github remove <name>   # forget a connection
+fawwk github statuses off    # stop posting deploy status on commits
 ```
+
+GitHub Apps connected before Fawwk 0.3 don't have the permission for commit statuses yet. Deploys work
+the same, and the deploy output says where to add it: the app's settings page on GitHub → Permissions
+→ **Commit statuses: Read and write**, then accept the change on its install.
 
 It needs `panel.<domain>` to point to this server (the wildcard DNS record covers it). Webhooks are
 received by a small, locked-down container (`fawwk-hooks`) that only checks signatures and queues jobs;
@@ -110,7 +119,8 @@ The guided flow asks for:
    background worker. Path routes strip the prefix by default (`/api/users` reaches the app as `/users`).
 5. **Port:** what the app listens on. It's also passed in as `PORT`, so apps that read `$PORT` just work.
 6. **Health check path:** optional, e.g. `/health`.
-7. **Env vars:** paste your whole `.env` and press Ctrl-D. If the repo has a `.env.example`, Fawwk then
+7. **Env vars:** paste your whole `.env` and press Ctrl-D. Quoted values may span several lines (PEM
+   keys, certificates). If the repo has a `.env.example`, Fawwk then
    asks for each variable you haven't set.
 8. **Auto-deploy:** on by default.
 
@@ -139,6 +149,7 @@ fawwk exec api                      # shell inside the container
 
 fawwk env api                       # list vars (masked); --reveal to show values
 fawwk env api set KEY=value         # then offers a zero-downtime restart
+fawwk env api set-file KEY key.pem  # a file's contents, e.g. a private key (multi-line is fine)
 fawwk env api unset KEY
 fawwk env api import [file]         # merge a .env file, or paste one
 fawwk env api edit                  # open in $EDITOR
@@ -149,7 +160,7 @@ fawwk domain api rm example.com/api
 fawwk port api 8080
 fawwk health api /healthz --timeout 180   # path, and how long a new version gets to boot
 fawwk autodeploy api off
-fawwk build api nixpacks            # build method: auto | dockerfile | nixpacks | static
+fawwk build api railpack            # build method: auto | dockerfile | railpack | nixpacks | static
 fawwk buildenv api NEXT_PUBLIC_URL  # only these env vars reach the build (all | none | KEY,KEY)
 
 fawwk doctor                        # server, DNS and app health check
@@ -169,6 +180,34 @@ fawwk access api deploykey          # switch access: github | deploykey | token 
 ```
 
 Each one checks the change works before saving it, then offers to redeploy.
+
+### Databases
+
+```bash
+fawwk db create shop --type postgres --link api    # also: --type redis, --type mongodb
+fawwk db                                           # all databases, state, last backup, apps using them
+fawwk db info shop                                 # details; the URL with --reveal
+fawwk db link shop worker                          # give another app the URL (DATABASE_URL)
+fawwk db shell shop                                # psql / redis-cli / mongosh
+fawwk db backup shop                               # back up now
+fawwk db restore shop latest                       # or a file from: fawwk db backups shop
+fawwk db schedule 02:30                            # daily backup time (default 03:17), or off
+fawwk db remove shop
+```
+
+- Each database runs in its own container on the private Fawwk network, as `fawwk-db-<name>`, with a
+  random password and its data in a Docker volume. Nothing is published to the internet: only your apps
+  can reach it.
+- `--link` (or `fawwk db link`) sets the connection URL on an app: `DATABASE_URL` for Postgres,
+  `REDIS_URL` for Redis, `MONGODB_URL` for MongoDB (`--as NAME` to pick another), then offers a restart.
+- Versions: Postgres 17, Redis 7 and MongoDB 8 by default; pick another major with `--version 16`.
+  MongoDB 5 and later need a CPU with AVX, which some older or emulated VPS CPUs lack.
+- Backups are logical (`pg_dump`, a Redis snapshot, `mongodump`) in `/var/lib/fawwk/backups/<name>/`.
+  The nightly ones keep the last 7 (`DB_KEEP_BACKUPS`); ones you make by hand stay until you delete them.
+  A failed nightly backup sends a notification (`fawwk notify`).
+- `restore` replaces the database's contents with the backup's, exactly: data added after the backup is
+  gone. A safety backup of the current data is taken first. Apps are disconnected for a moment.
+- Redis runs with its append-only file on, so a restart loses nothing.
 
 ### Persistent data (volumes)
 
@@ -237,6 +276,7 @@ The JSON body works with Slack and Discord incoming webhooks. It also carries `a
 ```bash
 fawwk cleanup                       # old images and build logs, untagged layers, build cache
 fawwk backup [file] [--with-data]   # settings, apps, env vars, keys, GitHub connections, certificates
+                                    # (--with-data: app volumes and a fresh backup of every database)
 fawwk restore backup.tar.gz         # on a new server, then: fawwk setup --yes && fawwk deploy --all
 fawwk update                        # update Fawwk (also refreshes timers, log rotation, webhooks)
 fawwk update --branch <branch>      # try another branch, e.g. a pull request; --branch main to go back
@@ -276,14 +316,23 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 | `/var/lib/fawwk/apps/<app>/` | git checkout and build logs |
 | `/var/log/fawwk/` | auto-deploy logs (`sync.log`, `hooks.log`, `<app>.log`, `<app>-cron.log`), rotated weekly |
 | `/etc/cron.d/fawwk-<app>` | generated from `fawwk cron` |
+| `/etc/fawwk/apps/<app>/env.d/` | multi-line env values, one file each (root-only) |
+| `/etc/fawwk/dbs/<name>/` | database settings and password (root-only) |
+| `/var/lib/fawwk/backups/<name>/` | database backups |
 | Docker volumes `fawwk_<app>_*` | app volumes; `fawwk_caddy_data` holds HTTPS certificates |
+| Docker volumes `fawwk_db_<name>` | database data |
 
 ## Security notes
 
 - App containers run with `no-new-privileges` and a process limit, so `sudo` inside an app container
   won't work. They're only reachable through Caddy and are never published on a host port.
-- Env vars are passed to the build by default (Next.js `NEXT_PUBLIC_*` and similar need them), which
-  bakes them into the locally stored image. Limit that with `fawwk buildenv <app> KEY,KEY` or `none`.
+- Env vars are available to the build by default (Next.js `NEXT_PUBLIC_*` and similar need them). Fawwk
+  passes builders variable names and keeps the values in their environment, so values never show on a
+  command line. With Railpack they're BuildKit secrets and don't end up in the image. A Dockerfile's
+  `ARG`s and Nixpacks do write them into the locally stored image. Limit what a build sees with
+  `fawwk buildenv <app> KEY,KEY` or `none`.
+- Databases have no published ports, random 48-character passwords, and run as their own users with
+  `no-new-privileges`. Their passwords reach Docker through the environment, never a command line.
 - The webhook receiver runs as `nobody` in its own read-only container with no capabilities, and limits
   what one client can tie up: 10s socket timeout, 8 requests at once, 4 MiB bodies. It only checks
   signatures and queues jobs: it has no access to Docker, app secrets or the shell.
@@ -296,15 +345,17 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 
 - One server, one container per app. `docker-compose` multi-service apps aren't supported yet. Use a
   Dockerfile per service and create one app for each.
-- Multi-line env values aren't supported; put `\n` inside a single line instead.
 - The last 3 images per app are kept for rollback (`KEEP_IMAGES`).
-- Nixpacks, used for repos without a Dockerfile, is in maintenance mode upstream. For anything
-  non-trivial, a Dockerfile gives you the most control.
+- Railpack builds repos without a Dockerfile. Apps that already deployed with Nixpacks before Fawwk 0.3
+  keep using it (Nixpacks is in maintenance mode upstream). Switch one with `fawwk build <app> railpack`.
+- Moving a database to a new major version isn't automatic: back up, create a new database with
+  `--version`, restore into it, then `fawwk db link` it.
 
 ## Development
 
 ```bash
-sudo tests/run.sh            # the whole suite (sandboxed: stub docker, temp dirs)
+sudo tests/run.sh            # the whole suite (sandboxed: temp dirs, a stub docker; the database test
+                             # uses real Docker when it's running, and the Railpack test needs railpack)
 sudo tests/run.sh pipeline   # tests whose name matches
 shellcheck bin/fawwk lib/*.sh install.sh tests/run.sh
 ```
@@ -314,6 +365,5 @@ CI runs both on every push and pull request (`.github/workflows/ci.yml`).
 ## Roadmap
 
 - Web panel at `panel.<domain>`
-- Managed Postgres/Redis with scheduled backups
 - docker-compose apps, preview deploys per branch
-- Deploy status reported back to GitHub
+- Off-server backup copies (S3-compatible storage)
