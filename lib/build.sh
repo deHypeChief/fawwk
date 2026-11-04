@@ -104,7 +104,7 @@ build_progress() {
   local pid=$1 log=$2 last
   if [[ ! -t 2 ]]; then return 0; fi
   while kill -0 "$pid" 2>/dev/null; do
-    last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-90)
+    last=$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-90 || true)
     printf '\r\e[K    %s%s%s' "$C_DIM" "$last" "$C_RESET" >&2
     sleep 1
   done

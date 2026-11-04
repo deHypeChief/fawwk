@@ -24,11 +24,11 @@ cmd_doctor() {
   command -v nixpacks >/dev/null 2>&1 && ok "Nixpacks installed" || warn "Nixpacks missing (only needed for repos without a Dockerfile)"
   if ufw status 2>/dev/null | grep -q 'Status: active'; then ok "Firewall active"; else warn "Firewall (ufw) is inactive"; fi
 
-  disk=$(df -P / | awk 'NR == 2 {gsub("%", "", $5); print $5}')
+  disk=$(df -P / | awk 'NR == 2 {gsub("%", "", $5); print $5}' || true)
   if ((disk >= 90)); then err "Disk ${disk}% full. Free space: docker system prune -a"; problems=$((problems + 1))
   elif ((disk >= 75)); then warn "Disk ${disk}% full"
   else ok "Disk ${disk}% used"; fi
-  mem=$(free -m | awk '/^Mem:/ {printf "%d/%dMB", $3, $2}')
+  mem=$(free -m | awk '/^Mem:/ {printf "%d/%dMB", $3, $2}' || true)
   ok "Memory $mem used"
 
   step "DNS"

@@ -152,16 +152,30 @@ setup_swap() {
   fi
 }
 
+# Every port SSH might be listening on, so enabling the firewall can never lock you out.
+ssh_ports() {
+  {
+    # The port of the SSH session running this setup, if any.
+    [[ -n ${SSH_CONNECTION-} ]] && awk '{print $4}' <<<"$SSH_CONNECTION"
+    # sshd's effective config (fails on Ubuntu 24.04 when sshd is socket-activated, hence the fallbacks).
+    sshd -T 2>/dev/null | awk '$1 == "port" {print $2}'
+    # Port lines in the config files.
+    cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk 'tolower($1) == "port" {print $2}'
+    # Ports sshd is actually listening on right now.
+    ss -Hltnp 2>/dev/null | awk '/"sshd"/ {n = split($4, a, ":"); print a[n]}'
+    echo 22
+  } 2>/dev/null | grep -E '^[0-9]+$' | sort -un || true
+}
+
 setup_firewall() {
-  local ssh_port
-  ssh_port=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')
-  ssh_port=${ssh_port:-22}
-  ufw allow "$ssh_port/tcp" comment 'ssh' >/dev/null
+  local p ports
+  ports=$(ssh_ports | tr '\n' ' ')
+  for p in $ports; do ufw allow "$p/tcp" comment 'ssh' >/dev/null; done
   ufw allow 80/tcp comment 'http' >/dev/null
   ufw allow 443/tcp comment 'https' >/dev/null
   ufw allow 443/udp comment 'http3' >/dev/null
   ufw --force enable >/dev/null
-  ok "Firewall on: SSH ($ssh_port), HTTP (80), HTTPS (443) open; everything else closed"
+  ok "Firewall on: SSH (${ports% }), HTTP (80), HTTPS (443) open; everything else closed"
 }
 
 setup_timer() {

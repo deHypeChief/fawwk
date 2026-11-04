@@ -62,7 +62,7 @@ release_image() {
   if ! is_worker; then
     if env_has "$envf" PORT; then
       local envport
-      envport=$(grep '^PORT=' "$envf" | tail -n1 | cut -d= -f2)
+      envport=$(grep '^PORT=' "$envf" | tail -n1 | cut -d= -f2 || true)
       [[ $envport == "$A_PORT" ]] || warn "Your env sets PORT=$envport but the app is routed to port $A_PORT."
     else
       args+=(-e "PORT=$A_PORT")

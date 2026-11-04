@@ -8,7 +8,7 @@ cmd_deploy() {
   require_root deploy; require_setup
   if [[ -z $name ]]; then
     local apps
-    apps=$(app_names | tr '\n' ' ')
+    apps=$(app_names | tr '\n' ' ' || true)
     [[ -n $apps ]] || { info "No apps yet."; cmd_create; return; }
     ask name "Which app? ($apps)" "" app_exists_check
   fi

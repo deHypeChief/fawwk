@@ -32,7 +32,7 @@ info() { printf '    %s\n' "$*" >&2; }
 ok()   { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
 warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()  { printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
-die()  { err "$*"; exit 1; }
+die()  { err "$*"; FAWWK_DIED=1; exit 1; }
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
 
 # ---------- prompts ----------
@@ -190,14 +190,19 @@ require_setup() {
 server_ip() {
   local ip
   ip=$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
-  [[ -n $ip ]] || ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}')
+  [[ -n $ip ]] || ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}' || true)
   printf '%s' "$ip"
 }
+
+# IPv4 addresses HOST resolves to, one per line (empty if it doesn't resolve).
+dns_lookup() { getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u || true; }
 
 # dns_points_here HOST — 0 if HOST resolves to this server's IP.
 dns_points_here() {
   [[ -n ${SERVER_IP-} ]] || return 1
-  getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | grep -qx "$SERVER_IP"
+  local ips
+  ips=$(dns_lookup "$1")
+  [[ $'\n'$ips$'\n' == *$'\n'"$SERVER_IP"$'\n'* ]]
 }
 
 dns_report() {
@@ -205,7 +210,7 @@ dns_report() {
   if dns_points_here "$host"; then
     ok "DNS: $host → $SERVER_IP"
   else
-    got=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+    got=$(dns_lookup "$host" | tr '\n' ' ')
     if [[ -z $got ]]; then
       warn "DNS: $host doesn't resolve yet. Add an A record pointing to $SERVER_IP."
     else

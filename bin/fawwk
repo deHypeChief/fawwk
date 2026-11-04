@@ -11,6 +11,15 @@ for _lib in common git env build proxy release setup create manage doctor; do
 done
 unset _lib
 
+# Never stop silently: remember the last failing command and report it if it ends the run.
+trap '_fw_line=$LINENO _fw_src=${BASH_SOURCE[0]##*/} _fw_cmd=$BASH_COMMAND' ERR
+trap '_fw_rc=$?
+  if ((_fw_rc != 0 && _fw_rc != 130)) && [[ ${FAWWK_DIED:-0} != 1 && -n ${_fw_cmd-} ]]; then
+    err "Fawwk stopped unexpectedly (exit $_fw_rc) at $_fw_src:$_fw_line"
+    err "Failed command: $_fw_cmd"
+    info "Re-running the same command is safe. Please share this output if it keeps happening."
+  fi' EXIT
+
 usage() {
   cat <<EOF
 ${C_BOLD}Fawwk${C_RESET} v$FAWWK_VERSION: deploy git repos to containers on this server
