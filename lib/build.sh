@@ -151,6 +151,41 @@ build_env_allowed() {
 }
 
 # build_image DEPLOY_ID LOGFILE — builds fawwk/<app>:<id>. Sets BUILT_IMAGE.
+# build_dockerfile_with_args SRC OUT KEY... — writes SRC to OUT with `ARG KEY` declarations added, so
+# build-time env vars reach the build's RUN steps without the repo declaring them (Docker only exposes
+# a --build-arg to a stage that declares it; Coolify adds these lines the same way, so Dockerfiles
+# written for it work unchanged). The ARGs go after every FROM except the last: in a multi-stage build
+# the last stage only ships the output, and BuildKit writes the build args a RUN step sees into the
+# image's history, so values (tokens included) must not reach it. A single-stage Dockerfile gets them
+# in its one stage. Keys a stage already declares are left alone.
+build_dockerfile_with_args() {
+  local src=$1 out=$2
+  shift 2
+  awk -v keys="$*" '
+    BEGIN { n = split(keys, k, " ") }
+    # Pass 1: count stages and note which ARGs each one declares.
+    NR == FNR {
+      if (toupper($0) ~ /^[[:space:]]*FROM[[:space:]]/) stages++
+      else if (stages && toupper($0) ~ /^[[:space:]]*ARG[[:space:]]/) {
+        line = $0; sub(/^[[:space:]]*[Aa][Rr][Gg][[:space:]]+/, "", line)
+        m = split(line, a, /[[:space:]]+/)
+        for (j = 1; j <= m; j++) { sub(/=.*/, "", a[j]); if (a[j] != "") declared[stages, a[j]] = 1 }
+      }
+      next
+    }
+    # Pass 2: copy, adding the ARGs after each FROM (and its continuation lines) that gets them.
+    {
+      print
+      if (toupper($0) ~ /^[[:space:]]*FROM[[:space:]]/) { stage++; pending = (stage < stages || stages == 1) }
+      if (pending && $0 !~ /\\[[:space:]]*$/) {
+        pending = 0
+        for (j = 1; j <= n; j++) if (!((stage, k[j]) in declared)) print "ARG " k[j]
+      }
+    }' "$src" "$src" >"$out"
+  # A Dockerfile-specific ignore file (Dockerfile.dockerignore) must follow it to its new name.
+  if [[ -f $src.dockerignore ]]; then cp -f "$src.dockerignore" "$out.dockerignore"; else rm -f "$out.dockerignore"; fi
+}
+
 # build_env_keys — the loaded app's env var names that go to the build (see fawwk buildenv), one per
 # line: single-line ones, then multi-line ones prefixed with "ml ".
 build_env_keys() {
@@ -227,9 +262,15 @@ build_image() {
     env_export_multiline "$envf"
     case $type in
       dockerfile)
-        local dfile args=() k
+        local dfile gen args=() k
         dfile=$(build_dockerfile "$ctx") || { echo "No Dockerfile in '${A_DIR:-.}' (build type is set to dockerfile)"; exit 1; }
         for k in "${keys[@]}"; do args+=(--build-arg "$k"); done
+        if ((${#keys[@]})); then
+          # A copy with ARG lines for the build-time vars (outside the repo; see build_dockerfile_with_args).
+          gen="$(app_var "$A_NAME")/Dockerfile.fawwk"
+          build_dockerfile_with_args "$dfile" "$gen" "${keys[@]}"
+          dfile=$gen
+        fi
         DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
       static)
         local df
