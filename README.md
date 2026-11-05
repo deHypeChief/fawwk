@@ -11,18 +11,9 @@ git push              # redeploys in seconds (GitHub connected), or within a min
 
 ## How it works
 
-```
-               ┌─────────────────────────────── your Ubuntu server ────────────────────────────────┐
- browser ────► │ Caddy (fawwk-proxy) :80/:443 ──► fawwk-web-…  example.com                         │
-               │   automatic HTTPS, routes by ──► fawwk-api-…  api.example.com, example.com/api    │
-               │   domain and path                  │                                              │
-               │                                    └──► fawwk-db-shop  Postgres · Redis · MongoDB │
-               │                                         private to your apps, backed up nightly   │
-               │                                                                                   │
- GitHub push ► │ fawwk-hooks (panel.<domain>) ──► build → release command → health check → swap    │
-               │ fawwk-autodeploy.timer: every minute, new commit? (other git hosts, and a backup) │
-               └───────────────────────────────────────────────────────────────────────────────────┘
-```
+![How Fawwk works: visitors reach Caddy, which serves HTTPS and routes each domain or path to an app container; apps reach their private, nightly backed-up databases; a GitHub push reaches fawwk-hooks, which builds, runs the release command, health-checks the new version and swaps traffic to it with zero downtime; a timer checks every minute as a backup.](docs/architecture.png)
+
+<sub>Source: [`docs/architecture.svg`](docs/architecture.svg). Edit it, then render the PNG at 2× (for example with a headless browser).</sub>
 
 - **Proxy:** [Caddy](https://caddyserver.com) runs in a container, gets and renews Let's Encrypt
   certificates, and routes each domain or path to the right app container. App containers are never
