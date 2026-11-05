@@ -12,6 +12,9 @@
   DNS (what visitors and Let's Encrypt use) already points here, it clears the cache
   (`resolvectl flush-caches`) and says so, instead of "doesn't resolve yet".
 
+- **`fawwk create` lists your repos:** with GitHub connected, it offers the repos the GitHub App can
+  reach (most recently pushed first) in a menu, with "Another repo" for typing any URL.
+
 ### Fixed
 
 - `fawwk github connect` sent GitHub an invalid app manifest ("The manifest is not valid JSON") on

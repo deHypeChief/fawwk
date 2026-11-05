@@ -76,7 +76,8 @@ cmd_create() {
 
   # --- repo + name -------------------------------------------------------
   step "Repository"
-  ask repo "GitHub repo (URL or owner/name)" "$repo" valid_repo
+  [[ -z $repo ]] && is_interactive && gh_have_sources && create_pick_repo
+  [[ -n $repo ]] && valid_repo "$repo" 2>/dev/null || ask repo "GitHub repo (URL or owner/name)" "$repo" valid_repo
   [[ -n $name ]] || name=$(sanitize_name "$(repo_slug "$repo")")
   ask name "App name" "$name" valid_new_app_name
 
@@ -197,6 +198,25 @@ cmd_create() {
   local r
   for r in $A_ROUTES; do dns_report "${r%%/*}"; done
   deploy_app "$name" || die "Deploy failed. Fix the issue, then run: sudo fawwk deploy $name"
+}
+
+# Sets repo from a menu of the repos the connected GitHub Apps can reach (newest push first), or leaves it
+# empty for "Another repo", which then asks for a URL.
+CREATE_PICK_MAX=20
+create_pick_repo() {
+  local repos=() pick
+  gh_need_jq >/dev/null
+  spin_start "Finding the repos Fawwk can deploy"
+  mapfile -t repos < <(gh_installed_repos)
+  spin_stop
+  ((${#repos[@]})) || return 0
+  ((${#repos[@]} > CREATE_PICK_MAX)) && {
+    hint "Showing the $CREATE_PICK_MAX most recently pushed of ${#repos[@]} repos; pick \"Another repo\" to type any of them."
+    repos=("${repos[@]:0:CREATE_PICK_MAX}")
+  }
+  menu pick "Which repo?" 1 "${repos[@]}" "Another repo (type its URL or owner/name)"
+  ((pick <= ${#repos[@]})) && repo=${repos[pick - 1]}
+  return 0
 }
 
 valid_new_app_name() {
