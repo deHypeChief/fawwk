@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # fawwk — shared helpers: paths, config files, validation, locking.
 
+# Bash 5.2 (Ubuntu 24.04) made `&` in ${var//pattern/replacement} mean "the matched text", so
+# ${m//\"/&quot;} gives "quot; instead of &quot;. Fawwk is written for the old rule: a literal &.
+shopt -u patsub_replacement 2>/dev/null || true
+
 FAWWK_VERSION="0.3.0"
 
 # ---------- paths (overridable for testing) ----------
@@ -224,6 +228,13 @@ fawwk_version() {
   local sha
   sha=$(git -C "$FAWWK_HOME" rev-parse --short HEAD 2>/dev/null || true)
   printf '%s%s' "$FAWWK_VERSION" "${sha:+ ($sha)}"
+}
+
+# html_escape TEXT — TEXT made safe inside an HTML attribute or element.
+html_escape() {
+  local s=$1
+  s=${s//&/&amp;}; s=${s//\"/&quot;}; s=${s//\'/&#39;}; s=${s//</&lt;}; s=${s//>/&gt;}
+  printf '%s' "$s"
 }
 
 # sanitize "My_Repo.Name" -> "my-repo-name"
