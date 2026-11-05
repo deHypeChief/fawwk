@@ -12,6 +12,12 @@
   DNS (what visitors and Let's Encrypt use) already points here, it clears the cache
   (`resolvectl flush-caches`) and says so, instead of "doesn't resolve yet".
 
+### Fixed
+
+- `fawwk github connect` sent GitHub an invalid app manifest ("The manifest is not valid JSON") on
+  bash 5.2 and newer (Ubuntu 24.04): bash 5.2 made `&` in a string replacement mean the matched text,
+  which turned the HTML-escaped `&quot;` into `"quot;`. Fawwk now turns that bash behaviour off.
+
 ### Changed
 
 - Tests that can't run where they are (no Docker daemon, no railpack...) report `skip`, not `ok`.
