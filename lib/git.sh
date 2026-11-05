@@ -73,6 +73,14 @@ git_remote_head() {
   git_cmd ls-remote "$(git_url)" "refs/heads/$A_BRANCH" 2>/dev/null | awk '{print $1; exit}'
 }
 
+# git_branches [DEFAULT] — the repo's branches, one per line: DEFAULT first (when it exists), then the
+# rest alphabetically.
+git_branches() {
+  local def=${1-}
+  git_cmd ls-remote --heads "$(git_url)" 2>/dev/null | awk '{sub("^refs/heads/", "", $2); print $2}' |
+    sort | awk -v d="$def" '$0 == d {print; next} {rest[++n] = $0} END {for (i = 1; i <= n; i++) print rest[i]}'
+}
+
 git_branch_exists() { [[ -n $(git_remote_head) ]]; }
 
 # Clones or updates the app's checkout to the tip of A_BRANCH. Prints the commit hash.
