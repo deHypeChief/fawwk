@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1
+
+### Upgrading
+
+```bash
+sudo fawwk update
+```
+
+### New
+
+- **Builds without the cache:** `fawwk build <app> cache off` rebuilds every step on every deploy, for
+  Dockerfiles that fetch things Docker can't see change (a `git clone` of another repo, a download);
+  their cached copy stayed the first one fetched. `fawwk deploy <app> --no-cache` does it once.
+  `info` shows the setting, `--json` as `build_cache`.
+
 ## 0.4.0
 
 ### Upgrading
