@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Dockerfile builds get build-time env without `ARG` lines,** as on Coolify: Fawwk declares each
+  build-time variable in every stage but the last (the last stage ships, and BuildKit records build
+  args in the image's history), skipping ones a stage already declares. Vite's `VITE_*` values and
+  similar now reach `npm run build` / `bun run build`, and Dockerfiles written for Coolify work as they are.
+- **`doctor` tells a stale DNS cache from a missing record:** when this server's lookup fails but public
+  DNS (what visitors and Let's Encrypt use) already points here, it clears the cache
+  (`resolvectl flush-caches`) and says so, instead of "doesn't resolve yet".
+
+### Changed
+
+- Tests that can't run where they are (no Docker daemon, no railpack...) report `skip`, not `ok`.
+
 ## 0.3.0
 
 ### Upgrading from 0.2

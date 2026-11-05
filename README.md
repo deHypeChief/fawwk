@@ -25,7 +25,9 @@ git push              # redeploys automatically within a minute
   certificates, and routes each domain or path to the right app container. App containers are never
   exposed to the internet directly.
 - **Builds:** a `Dockerfile` in the repo is used if present (any casing, e.g. `DOCKERFILE`). Before building,
-  Fawwk checks that every file it `COPY`s is actually in the repo (a missing lock file is the usual culprit). A plain static site (`index.html`, no
+  Fawwk checks that every file it `COPY`s is actually in the repo (a missing lock file is the usual culprit).
+  Env vars reach the build without `ARG` lines in the Dockerfile: Fawwk adds them, as Coolify does, so
+  Vite's `VITE_*` and similar build-time values work and Coolify Dockerfiles move over unchanged. A plain static site (`index.html`, no
   `package.json`) is served by Caddy. Anything else (Node, Python, Go, Ruby, PHP...) is auto-detected
   with [Railpack](https://railpack.com), the successor to Nixpacks.
 - **Zero-downtime deploys:** an optional release command (e.g. migrations) runs in the new image first,
@@ -353,9 +355,11 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
   won't work. They're only reachable through Caddy and are never published on a host port.
 - Env vars are available to the build by default (Next.js `NEXT_PUBLIC_*` and similar need them). Fawwk
   passes builders variable names and keeps the values in their environment, so values never show on a
-  command line. With Railpack they're BuildKit secrets and don't end up in the image. A Dockerfile's
-  `ARG`s and Nixpacks do write them into the locally stored image. Limit what a build sees with
-  `fawwk buildenv <app> KEY,KEY` or `none`.
+  command line. With Railpack they're BuildKit secrets and don't end up in the image. For a Dockerfile,
+  Fawwk declares them (`ARG`) in every build stage but the last: in a multi-stage build the last stage
+  is what ships, and BuildKit writes the build args a `RUN` sees into the image's history. A
+  single-stage Dockerfile, a value its own `ARG`s use in the last stage, and Nixpacks do end up in the
+  locally stored image. Limit what a build sees with `fawwk buildenv <app> KEY,KEY` or `none`.
 - Databases have no published ports, random 48-character passwords, and run as their own users with
   `no-new-privileges`. Their passwords reach Docker through the environment, never a command line.
 - The webhook receiver runs as `nobody` in its own read-only container with no capabilities, and limits
