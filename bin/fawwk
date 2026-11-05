@@ -5,7 +5,7 @@ set -Eeuo pipefail
 FAWWK_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export FAWWK_HOME
 
-for _lib in ui common git github env build proxy release notify setup create manage settings db maint doctor; do
+for _lib in ui common git github env build proxy release notify updates logs setup create manage settings db maint doctor; do
   # shellcheck disable=SC1090
   source "$FAWWK_HOME/lib/$_lib.sh"
 done
@@ -45,7 +45,7 @@ usage() {
     c "cleanup" "Free disk space (keeps rollback images)"
     c "backup [file] [--with-data]" "Save settings, apps, secrets, certificates"
     c "restore <file>" "Rebuild a backup on this server"
-    c "update" "Update Fawwk itself"
+    c "update [--check]" "Update Fawwk itself (or just check)"
     c "uninstall" "Remove Fawwk and its apps"
 
     h "GitHub"
@@ -58,7 +58,7 @@ usage() {
     c "deploy <app> | --all" "Pull the latest commit and redeploy"
     c "list [--json]" "All apps and their state"
     c "info <app> [--json]" "Details for one app"
-    c "logs <app> [-f] [-n N] [--build]" "App logs, or the last build log"
+    c "logs <app> [-f] [-n N] [--build] [--raw]" "App logs, or the last build log"
     c "restart | stop | start <app>" "Zero-downtime restart, stop, start"
     c "rollback <app> [deploy-id]" "Go back to an earlier version"
     c "history <app> [--json]" "Recent deploys"
@@ -141,6 +141,7 @@ main() {
     help | -h | --help) usage 2>&1 ;;
     *) err "Unknown command: $cmd"; hint "See all commands with: fawwk help"; exit 1 ;;
   esac
+  update_notice "$cmd" || true
 }
 
 main "$@"

@@ -18,6 +18,11 @@ cmd_doctor() {
     warn "Public IP changed: $SERVER_IP → $ip (updating)"
     conf_set "$FAWWK_CONF" SERVER_IP "$ip"; SERVER_IP=$ip
   fi
+  if [[ ${UPDATE_CHECK:-on} != off ]] && update_check >/dev/null 2>&1; then
+    local newer; newer=$(update_available)
+    if [[ -n $newer ]]; then warn "Fawwk $newer is out (you have $FAWWK_VERSION): sudo fawwk update"
+    else ok "Fawwk $FAWWK_VERSION is up to date"; fi
+  fi
   if docker info >/dev/null 2>&1; then ok "Docker is running"; else err "Docker isn't running: systemctl start docker"; problems=$((problems + 1)); fi
   if proxy_running; then
     ok "Caddy proxy is running ($(proxy_image))"
