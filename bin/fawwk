@@ -29,7 +29,7 @@ usage() {
   [[ -r $FAWWK_CONF ]] && source "$FAWWK_CONF" 2>/dev/null
   ui_banner
   local A=$C_ACCENT R=$C_RESET M=$C_MUTED B=$C_BOLD
-  c() { printf '  %s%-38s%s %s\n' "$A" "$1" "$R" "$2"; }
+  c() { printf '  %s%-42s%s %s\n' "$A" "$1" "$R" "$2"; }
   h() { printf '\n %s%s%s\n' "$B" "$1" "$R"; }
   {
     h "Getting started"

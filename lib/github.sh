@@ -276,6 +276,25 @@ gh_update_hook_urls() {
   done < <(gh_sources)
 }
 
+# gh_installed_repos — every repo the connected GitHub Apps can reach, as owner/name, most recently
+# pushed first (for picking one in `fawwk create`). Prints nothing when GitHub can't be asked.
+gh_installed_repos() {
+  local src jwt id tok
+  command -v jq >/dev/null 2>&1 || return 0
+  while IFS= read -r src; do
+    [[ -z $src ]] && continue
+    jwt=$(gh_jwt "$src" 2>/dev/null) || continue
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      tok=$(gh_api "$jwt" POST "/app/installations/$id/access_tokens" '{"permissions":{"metadata":"read"}}' 2>/dev/null |
+        jq -r '.token // empty' 2>/dev/null) || continue
+      [[ -n $tok ]] || continue
+      gh_api "$tok" GET "/installation/repositories?per_page=100" 2>/dev/null |
+        jq -r '.repositories[]? | "\(.pushed_at // "") \(.full_name)"' 2>/dev/null || true
+    done < <(gh_api "$jwt" GET /app/installations 2>/dev/null | jq -r '.[]?.id' 2>/dev/null || true)
+  done < <(gh_sources) | sort -r | awk '!seen[$2]++ {print $2}'
+}
+
 # ---------- `fawwk github` ----------
 github_usage() {
   cat <<'EOF'
