@@ -1002,6 +1002,32 @@ test_create_offers_branches() {
   create_pick_branch main 2>/dev/null; eq "$A_BRANCH" main
 }
 
+test_create_offers_folders() {
+  load_fawwk
+  local r=$SB/mono
+  mkdir -p "$r/apps/web/public" "$r/apps/api" "$r/services/worker" "$r/node_modules/x" "$r/docs"
+  echo '{}' >"$r/package.json"
+  echo '{}' >"$r/apps/web/package.json"; touch "$r/apps/web/index.html" "$r/apps/web/public/index.html"
+  printf 'FROM scratch\n' >"$r/apps/api/Dockerfile"
+  touch "$r/services/worker/requirements.txt" "$r/node_modules/x/package.json" "$r/docs/notes.md"
+  eq "$(create_dir_candidates "$r" | tr '\n' ' ')" 'apps/api apps/web services/worker '
+  eq "$(dir_kind "$r/apps/api")|$(dir_kind "$r/apps/web")|$(dir_kind "$r/services/worker")|$(dir_kind "$r/docs")" 'Dockerfile|Node|Python|'
+  # Menu: the root (buildable here) is the default; picks map to folders; "Another folder" asks.
+  local dir dir_picked seen
+  menu() { seen="$2|$3|${*:4}"; printf -v "$1" '%s' "${PICK:-$3}"; }
+  dir=. dir_picked=0; create_pick_dir "$r" 2>/dev/null; eq "$dir|$dir_picked" '.|1'
+  has "$seen" 'Folder to deploy|1|'; has "$seen" 'apps/web'; has "$seen" '(Python)'
+  dir=. dir_picked=0; PICK=3 create_pick_dir "$r" 2>/dev/null; eq "$dir|$dir_picked" 'apps/web|1'
+  dir=. dir_picked=0; PICK=5 create_pick_dir "$r" 2>/dev/null; eq "$dir_picked" 0
+  # Nothing buildable at the root: the first folder is the default.
+  rm "$r/package.json"
+  dir=. dir_picked=0; create_pick_dir "$r" 2>/dev/null; eq "$dir" apps/api; has "$seen" 'Folder to deploy|2|'
+  # A plain repo: the root, no menu.
+  mkdir -p "$SB/plain"; echo '{}' >"$SB/plain/package.json"
+  menu() { echo "menu shown" >&2; return 1; }
+  dir=. dir_picked=0; create_pick_dir "$SB/plain" 2>/dev/null; eq "$dir|$dir_picked" '.|1'
+}
+
 # ---------- run ----------
 echo "Fawwk tests"
 for fn in $(declare -F | awk '{print $3}' | grep '^test_' | sed 's/^test_//'); do t "$fn"; done
