@@ -117,12 +117,15 @@ cmd_create() {
   # --- what to build ----------------------------------------------------
   local src ctx detected
   src="$(app_var "$name")/src"
+  local dir_picked=0
   if [[ -z $dir ]]; then
     dir=.
-    create_suggest_dir "$src"
+    if is_interactive; then create_pick_dir "$src"; else create_suggest_dir "$src"; fi
   fi
   while true; do
-    ask A_DIR "Folder to deploy (for monorepos; '.' is the repo root)" "$dir" valid_subdir
+    if ((dir_picked)); then A_DIR=$dir; dir_picked=0
+    else ask A_DIR "Folder to deploy (for monorepos; '.' is the repo root)" "$dir" valid_subdir
+    fi
     A_DIR=${A_DIR%/}
     ctx=$(build_context)
     [[ -d $ctx ]] && break
@@ -259,6 +262,50 @@ create_parse_routes() {
   done
   ((${#out[@]})) || { warn "Enter at least one domain, or 'none'."; return 1; }
   A_ROUTES="${out[*]}"
+}
+
+# dir_kind DIR — what's deployable in DIR (Dockerfile, Node, Python...), empty if nothing.
+dir_kind() {
+  local d=$1
+  if build_dockerfile "$d" >/dev/null; then echo Dockerfile
+  elif [[ -f $d/package.json ]]; then echo Node
+  elif [[ -f $d/requirements.txt || -f $d/pyproject.toml ]]; then echo Python
+  elif [[ -f $d/go.mod ]]; then echo Go
+  elif [[ -f $d/Gemfile ]]; then echo Ruby
+  elif [[ -f $d/composer.json ]]; then echo PHP
+  elif [[ -f $d/Cargo.toml ]]; then echo Rust
+  elif [[ -f $d/index.html ]]; then echo "static site"
+  fi
+}
+
+# create_dir_candidates SRC — folders below the repo root (up to 3 deep) that look deployable, one per line.
+create_dir_candidates() {
+  (cd "$1" && find . -mindepth 2 -maxdepth 4 \( -iname Dockerfile -o -name package.json -o -name requirements.txt \
+    -o -name pyproject.toml -o -name go.mod -o -name Gemfile -o -name composer.json -o -name Cargo.toml -o -name index.html \) \
+    -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/dist/*' \
+    -not -path '*/build/*' -not -path '*/.next/*' -not -path '*/target/*' -not -path '*/public/*' \
+    -print0 2>/dev/null | xargs -0 -r -n1 dirname | sed 's#^\./##' | sort -u) || true
+}
+
+# Sets dir (and dir_picked) from a menu of the repo root and its deployable folders, each labelled
+# with what it holds. Only one choice: it's used without asking. "Another folder" asks for a path.
+create_pick_dir() {
+  local src=$1 cands=() labels=() root pick def=1 d
+  mapfile -t cands < <(create_dir_candidates "$src")
+  root=$(dir_kind "$src")
+  if ((${#cands[@]} == 0)); then
+    [[ -n $root ]] && { dir=. dir_picked=1; ok "Folder: the repo root ${C_MUTED}($root)${C_RESET}"; }
+    return 0
+  fi
+  ((${#cands[@]} > CREATE_PICK_MAX)) && cands=("${cands[@]:0:CREATE_PICK_MAX}")
+  labels=(". ${C_MUTED}(repo root${root:+, $root})${C_RESET}")
+  [[ -n $root ]] || def=2
+  for d in "${cands[@]}"; do labels+=("$d ${C_MUTED}($(dir_kind "$src/$d"))${C_RESET}"); done
+  menu pick "Folder to deploy" "$def" "${labels[@]}" "Another folder (type its path)"
+  if ((pick == 1)); then dir=. dir_picked=1
+  elif ((pick <= ${#cands[@]} + 1)); then dir=${cands[pick - 2]} dir_picked=1
+  fi
+  return 0
 }
 
 # Lists likely app folders in a monorepo to help pick --dir.

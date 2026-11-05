@@ -14,7 +14,8 @@
 
 - **`fawwk create` lists your repos:** with GitHub connected, it offers the repos the GitHub App can
   reach (most recently pushed first) in a menu, with "Another repo" for typing any URL. The branch is
-  picked the same way, the repo's default branch first; a repo with one branch just uses it.
+  picked the same way, the repo's default branch first; a repo with one branch just uses it. So is the
+  folder, for monorepos: the root and every folder that looks deployable, labelled with what it holds.
 
 ### Fixed
 
