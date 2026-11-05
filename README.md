@@ -144,8 +144,8 @@ For Bitbucket, add `--token-user <username>` to `--token-file` (app passwords ne
 fawwk list [--json]                 # all apps, state, URL
 fawwk info api [--json]             # details, CPU/RAM, limits, last failure
 fawwk deploy api                    # pull + rebuild + zero-downtime swap (--all: every app)
-fawwk logs api -f                   # follow app logs
-fawwk logs api --build              # last build log
+fawwk logs api -f                   # follow app logs (styled: times, levels, JSON, HTTP codes)
+fawwk logs api --build              # last build log, step by step (--raw: as Docker gives them)
 fawwk history api [--json]          # recent deploys
 fawwk rollback api [deploy-id]      # back to the previous (or a given) version
 fawwk restart | stop | start api
@@ -291,14 +291,22 @@ say so.
 ### Notifications
 
 ```bash
-fawwk notify https://hooks.slack.com/services/...   # failures of automated deploys and cron jobs
-fawwk notify https://discord.com/api/webhooks/... --all   # every automated deploy
-fawwk notify test
+fawwk notify https://hooks.slack.com/services/...   # a webhook: Slack, Discord, or any JSON endpoint
+fawwk notify telegram 123456789:AAF...               # a Telegram bot (see below)
+fawwk notify all                                     # every automated deploy, not just failures
+fawwk notify test                                    # a test message to every channel
 fawwk notify off
 ```
 
-The JSON body works with Slack and Discord incoming webhooks. It also carries `app`, `status`,
-`commit` and `host` fields for anything else.
+What's sent: failed automated deploys (every one with `all`), failed cron jobs, failed nightly
+database backups, and new Fawwk versions, to every channel you set up. The webhook's JSON body works
+with Slack and Discord incoming webhooks, and also carries `app`, `status`, `commit` and `host` fields
+for anything else.
+
+**Telegram:** in Telegram, message **@BotFather**, send `/newbot` and copy the token it gives you. Send
+your new bot any message (or add it to a group and say hi), then run
+`sudo fawwk notify telegram <token>`. Fawwk finds that chat itself and sends a test message. To pick
+the chat yourself: `fawwk notify telegram <token> <chat-id>`.
 
 ### Disk space, backups, updates
 
@@ -308,6 +316,7 @@ fawwk backup [file] [--with-data]   # settings, apps, env vars, keys, GitHub con
                                     # (--with-data: app volumes and a fresh backup of every database)
 fawwk restore backup.tar.gz         # on a new server, then: fawwk setup --yes && fawwk deploy --all
 fawwk update                        # update Fawwk (also refreshes timers, log rotation, webhooks)
+fawwk update --check                # just check whether a new version is out
 fawwk update --branch <branch>      # try another branch, e.g. a pull request; --branch main to go back
 fawwk uninstall [--delete-data]     # remove Fawwk and its apps; Docker stays
 ```
@@ -382,6 +391,20 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 - Moving a database to a new major version isn't automatic: back up, create a new database with
   `--version`, restore into it, then `fawwk db link` it.
 
+## Staying up to date
+
+Fawwk never updates itself: you run `sudo fawwk update` when it suits you. To know when there's
+something new:
+
+- Once a day the server checks Fawwk's branch for a new version. `fawwk` commands then end with a line
+  like `▲ Fawwk 0.5.0 is out (you have 0.4.0) → sudo fawwk update`, and `fawwk doctor` says so too.
+- Each new version is sent once to your notifications (`fawwk notify`, e.g. Telegram).
+- Every version is a [GitHub Release](https://github.com/deHypeChief/fawwk/releases) with its notes.
+  For an email each time, watch the repo: **Watch → Custom → Releases**.
+
+Only new versions count, not every change merged into `main`. `UPDATE_CHECK=off` in
+`/etc/fawwk/fawwk.conf` turns the check off, and `FAWWK_NO_UPDATE_NOTICE=1` hides the line for one shell.
+
 ## Development
 
 ```bash
@@ -391,7 +414,9 @@ sudo tests/run.sh pipeline   # tests whose name matches
 shellcheck bin/fawwk lib/*.sh install.sh tests/run.sh
 ```
 
-CI runs both on every push and pull request (`.github/workflows/ci.yml`).
+CI runs both on every push and pull request (`.github/workflows/ci.yml`). Releasing is a version bump:
+set `FAWWK_VERSION` in `lib/common.sh` and add its section to `CHANGELOG.md`. When that reaches `main`,
+`.github/workflows/release.yml` tags `vX.Y.Z` and publishes the release with those notes.
 
 ## Roadmap
 
