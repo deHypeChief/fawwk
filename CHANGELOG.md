@@ -1,9 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+### Upgrading
+
+```bash
+sudo fawwk update
+```
 
 ### New
 
+- **Know when Fawwk has a new version:** the server checks once a day, and `fawwk` commands then end
+  with a line saying which version is out and how to update. `doctor` says whether Fawwk is up to date,
+  `fawwk update --check` checks right away, and each new version is sent once to your notifications.
+  Only new versions count, not every change. Nothing updates by itself. `UPDATE_CHECK=off` in
+  `/etc/fawwk/fawwk.conf` turns it off.
+- **GitHub Releases:** every version gets a release with its notes from this changelog, published
+  automatically when it reaches `main`. To get an email for each one, watch the repo on GitHub
+  (Watch → Custom → Releases).
+- **Telegram notifications:** `fawwk notify telegram <bot-token>` (a bot from @BotFather) finds the chat
+  you messaged the bot from and sends deploy failures, failed backups and new versions there. It works
+  alongside a webhook. Also new: `fawwk notify all | failures`, and `test` sends to every channel.
+- **Styled logs:** `fawwk logs <app>` shows local times with a line per day, a level badge
+  (`ERR` `WRN` `INF` `DBG`), JSON log lines as `message  key=value`, stack traces in their error's colour,
+  and HTTP methods and status codes highlighted. `--build` shows each build step with its output under it,
+  "done in 3.2s" or "cached", and errors in red. Piped output stays raw; `--raw` forces it.
 - **Dockerfile builds get build-time env without `ARG` lines,** as on Coolify: Fawwk declares each
   build-time variable in every stage but the last (the last stage ships, and BuildKit records build
   args in the image's history), skipping ones a stage already declares. Vite's `VITE_*` values and

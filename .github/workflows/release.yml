@@ -1,0 +1,37 @@
+name: Release
+
+# When main gets a new FAWWK_VERSION (lib/common.sh), tag it vX.Y.Z and publish a GitHub Release with
+# that version's section of CHANGELOG.md. Pushes that don't change the version do nothing. To get an
+# email for each release: Watch → Custom → Releases on the repo.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Release the version in lib/common.sh, once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^FAWWK_VERSION="\(.*\)"$/\1/p' lib/common.sh)
+          [ -n "$v" ] || { echo "No FAWWK_VERSION in lib/common.sh"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v is already released"
+            exit 0
+          fi
+          scripts/release-notes.sh "$v" > notes.md
+          gh release create "v$v" --target "$GITHUB_SHA" --title "Fawwk $v" --notes-file notes.md
