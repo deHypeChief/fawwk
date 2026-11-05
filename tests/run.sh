@@ -981,6 +981,27 @@ EOF
   repo=''; PICK=4 create_pick_repo 2>/dev/null; eq "$repo" ''
 }
 
+test_create_offers_branches() {
+  load_fawwk
+  local gc=(-c user.email=t@t -c user.name=t)
+  git init -q -b master "$SB/multi.git"
+  git -C "$SB/multi.git" "${gc[@]}" commit -q --allow-empty -m one
+  git -C "$SB/multi.git" branch zeta; git -C "$SB/multi.git" branch dev; git -C "$SB/multi.git" branch feature/x
+  A_NAME=web A_REPO=$SB/multi A_AUTH=public
+  eq "$(git_branches master | tr '\n' ' ')" 'master dev feature/x zeta '
+  # The picker: default first; "Another branch" leaves it to the usual question.
+  menu() { printf -v "$1" '%s' "${PICK:-1}"; }
+  A_BRANCH=''; create_pick_branch master 2>/dev/null; eq "$A_BRANCH" master
+  A_BRANCH=''; PICK=3 create_pick_branch master 2>/dev/null; eq "$A_BRANCH" feature/x
+  A_BRANCH=''; PICK=5 create_pick_branch master 2>/dev/null; eq "$A_BRANCH" ''
+  # A single branch is used without a menu.
+  git init -q -b main "$SB/single.git"
+  git -C "$SB/single.git" "${gc[@]}" commit -q --allow-empty -m one
+  A_REPO=$SB/single A_BRANCH=''
+  menu() { echo "menu shown" >&2; return 1; }
+  create_pick_branch main 2>/dev/null; eq "$A_BRANCH" main
+}
+
 # ---------- run ----------
 echo "Fawwk tests"
 for fn in $(declare -F | awk '{print $3}' | grep '^test_' | sed 's/^test_//'); do t "$fn"; done
