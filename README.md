@@ -5,20 +5,23 @@ One command prepares the server; one guided command turns a repo into a live app
 
 ```
 sudo fawwk setup      # once per server
-sudo fawwk create     # once per app: repo → domain → env → live
-git push              # redeploys automatically within a minute
+sudo fawwk create     # once per app: pick the repo, branch and folder → domain → env → live
+git push              # redeploys in seconds (GitHub connected), or within a minute
 ```
 
 ## How it works
 
 ```
-             ┌────────────────────────── your Ubuntu server ──────────────────────────┐
- browser ──► │ Caddy (fawwk-proxy) :80/:443 ──► fawwk-web-…  (example.com)             │
-             │   auto HTTPS, routes by        ──► fawwk-api-…  (api.example.com,      │
-             │   domain and path                                  example.com/api)     │
-             │                                                                         │
-             │ fawwk-autodeploy.timer ── every minute: new commit? → build → swap      │
-             └─────────────────────────────────────────────────────────────────────────┘
+               ┌─────────────────────────────── your Ubuntu server ────────────────────────────────┐
+ browser ────► │ Caddy (fawwk-proxy) :80/:443 ──► fawwk-web-…  example.com                         │
+               │   automatic HTTPS, routes by ──► fawwk-api-…  api.example.com, example.com/api    │
+               │   domain and path                  │                                              │
+               │                                    └──► fawwk-db-shop  Postgres · Redis · MongoDB │
+               │                                         private to your apps, backed up nightly   │
+               │                                                                                   │
+ GitHub push ► │ fawwk-hooks (panel.<domain>) ──► build → release command → health check → swap    │
+               │ fawwk-autodeploy.timer: every minute, new commit? (other git hosts, and a backup) │
+               └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Proxy:** [Caddy](https://caddyserver.com) runs in a container, gets and renews Let's Encrypt
@@ -38,11 +41,18 @@ git push              # redeploys automatically within a minute
 - **Auto-deploy:** with GitHub connected (below), every push deploys within seconds through a webhook.
   A systemd timer also checks each repo's branch every minute, for other git hosts and as a backup.
   A commit that failed to deploy isn't retried until you push again. When a webhook and the timer fire
-  for the same push, it's deployed once. Failures can notify Slack, Discord or any webhook URL.
+  for the same push, it's deployed once. Each deploy shows as a ✓ or ✗ on its GitHub commit.
+- **Notifications:** failed deploys, cron jobs and backups, and new Fawwk versions, sent to Telegram,
+  Slack, Discord or any webhook (`fawwk notify`).
+- **Logs:** `fawwk logs <app>` shows readable, coloured logs: local times, error and warning badges,
+  JSON logs as plain lines, and build logs as a list of steps.
+- **Updates:** Fawwk tells you when a new version is out (after commands, in `doctor`, in your
+  notifications) and never updates itself: `sudo fawwk update` when it suits you.
 
 ## Install
 
-On a fresh Ubuntu 22.04/24.04 server:
+On a fresh Ubuntu 22.04/24.04 server. 2 GB of RAM is enough for a few small apps; with databases and
+several apps building on one server, use 4 GB or more (builds are the hungriest part).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/deHypeChief/fawwk/main/install.sh | sudo bash -s -- --setup
@@ -330,16 +340,19 @@ databases first for a consistent copy.
 
 Output reads like a transcript: each step (`●`) has its results hanging under it (`⎿`), long work shows
 a spinner with the live build line, and questions collapse to one answered line once you reply. Choices
-are arrow-key menus (`↑/↓` or `j/k`, Enter; a number or the first letter also works).
+are arrow-key menus (`↑/↓` or `j/k`, Enter; a number or the first letter also works). `fawwk create`
+uses them for the repo, branch and folder, so there's rarely anything to type.
 
 | Variable | Effect |
 | --- | --- |
 | `FAWWK_THEME=mint` | default: mint and violet. Also `ocean`, `ember`, `mono` |
 | `NO_COLOR=1` | no colours |
 | `FAWWK_ASCII=1` | plain ASCII symbols, for terminals without Unicode |
+| `FAWWK_NO_UPDATE_NOTICE=1` | no "new Fawwk version" line after commands |
 
 Run `sudo` with `-E`, or set the variable after it (`sudo FAWWK_THEME=ocean fawwk list`).
-When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and menus switch off.
+When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and menus switch off, and
+`fawwk logs` prints logs exactly as Docker gives them, ready for `grep`.
 
 ## Files on the server
 
@@ -357,6 +370,7 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 | `/etc/fawwk/apps/<app>/env.d/` | multi-line env values, one file each (root-only) |
 | `/etc/fawwk/dbs/<name>/` | database settings and password (root-only) |
 | `/var/lib/fawwk/backups/<name>/` | database backups |
+| `/var/lib/fawwk/update-check` | the last check for a new Fawwk version |
 | Docker volumes `fawwk_<app>_*` | app volumes; `fawwk_caddy_data` holds HTTPS certificates |
 | Docker volumes `fawwk_db_<name>` | database data |
 
