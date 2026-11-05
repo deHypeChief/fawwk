@@ -204,6 +204,7 @@ build_env_keys() {
 # build_railpack CTX IMAGE KEY... — plan with `railpack prepare`, then build the plan through
 # Railpack's BuildKit frontend with Docker's own BuildKit (no extra BuildKit container). Build-time
 # env goes in as BuildKit secrets: available to build steps, never written into the image.
+# Uses build_image's nocache array.
 build_railpack() {
   local ctx=$1 image=$2 ver plan info rc k prep=() secrets=() hash
   shift 2
@@ -222,7 +223,7 @@ build_railpack() {
   # Layers that used a secret are rebuilt when a value changes.
   hash=$(for k in "$@"; do printf '%s=%s\n' "$k" "${!k}"; done | sha256sum | cut -d' ' -f1)
   echo "==> building with $RAILPACK_FRONTEND:v$ver"
-  docker buildx build --progress=plain \
+  docker buildx build --progress=plain "${nocache[@]}" \
     --build-arg BUILDKIT_SYNTAX="$RAILPACK_FRONTEND:v$ver" \
     --build-arg secrets-hash="$hash" --build-arg cache-key="fawwk-$A_NAME" \
     "${secrets[@]}" -f "$plan" -t "$image" "$ctx"
@@ -230,7 +231,7 @@ build_railpack() {
 
 # build_image DEPLOY_ID LOGFILE — builds fawwk/<app>:<id>. Sets BUILT_IMAGE.
 build_image() {
-  local id=$1 log=$2 ctx type image envf missing line keys=() ml=()
+  local id=$1 log=$2 ctx type image envf missing line keys=() ml=() nocache=()
   ctx=$(build_context)
   image="fawwk/$A_NAME:$id"
   envf=$(app_envfile "$A_NAME")
@@ -252,7 +253,15 @@ build_image() {
     warn "Nixpacks can't take multi-line values at build time; not passed: ${ml[*]} (Railpack can: fawwk build $A_NAME railpack)"
   fi
 
+  # Every step from scratch: for a Dockerfile that fetches things the cache can't see change
+  # (`fawwk build <app> cache off`), or once (`fawwk deploy <app> --no-cache`).
+  if [[ ${A_BUILD_CACHE:-on} == off || -n ${FAWWK_NO_CACHE-} ]]; then
+    nocache=(--no-cache)
+    info "Building without the cache"
+  fi
+
   (
+    ((${#nocache[@]})) && echo "==> building without the cache"
     # The values, for the names passed below.
     if [[ -f $envf ]]; then
       while IFS= read -r line; do
@@ -271,19 +280,19 @@ build_image() {
           build_dockerfile_with_args "$dfile" "$gen" "${keys[@]}"
           dfile=$gen
         fi
-        DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
+        DOCKER_BUILDKIT=1 docker build --progress=plain "${nocache[@]}" -t "$image" -f "$dfile" "${args[@]}" "$ctx" ;;
       static)
         local df
         df="$(app_var "$A_NAME")/static.Dockerfile"
         build_static_dockerfile "$df"
-        DOCKER_BUILDKIT=1 docker build --progress=plain -t "$image" -f "$df" "$ctx" ;;
+        DOCKER_BUILDKIT=1 docker build --progress=plain "${nocache[@]}" -t "$image" -f "$df" "$ctx" ;;
       railpack)
         build_railpack "$ctx" "$image" "${keys[@]}" ;;
       nixpacks)
         local args=() k
         # Nixpacks writes --env values into the image; it gets single-line values only.
         for k in "${keys[@]}"; do [[ " ${ml[*]} " == *" $k "* ]] || args+=(--env "$k=${!k}"); done
-        nixpacks build "$ctx" --name "$image" "${args[@]}" ;;
+        nixpacks build "$ctx" --name "$image" "${nocache[@]}" "${args[@]}" ;;
       *)
         echo "Unknown build type: $type"; exit 1 ;;
     esac

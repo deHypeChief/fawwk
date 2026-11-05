@@ -55,7 +55,7 @@ usage() {
 
     h "Apps"
     c "create [name]" "Connect a repo and deploy it (guided)"
-    c "deploy <app> | --all" "Pull the latest commit and redeploy"
+    c "deploy <app> | --all [--no-cache]" "Pull the latest commit and redeploy"
     c "list [--json]" "All apps and their state"
     c "info <app> [--json]" "Details for one app"
     c "logs <app> [-f] [-n N] [--build] [--raw]" "App logs, or the last build log"
@@ -70,7 +70,7 @@ usage() {
     c "domain <app> [list|add|rm]" "Domains and paths"
     c "port <app> [port]" "Port the app listens on"
     c "health <app> [path|off] [--timeout S]" "Health check path and timeout"
-    c "build <app> [method]" "auto, dockerfile, railpack, nixpacks, static"
+    c "build <app> [method | cache on|off]" "auto, dockerfile, railpack, nixpacks, static"
     c "buildenv <app> [all|none|KEYS]" "Env vars passed to the build"
     c "autodeploy <app> [on|off]" "Redeploy on every push"
     c "branch | folder | repo <app> [value]" "Change what gets deployed"

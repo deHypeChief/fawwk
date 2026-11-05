@@ -5,7 +5,7 @@
 # ${m//\"/&quot;} gives "quot; instead of &quot;. Fawwk is written for the old rule: a literal &.
 shopt -u patsub_replacement 2>/dev/null || true
 
-FAWWK_VERSION="0.4.0"
+FAWWK_VERSION="0.4.1"
 
 # ---------- paths (overridable for testing) ----------
 FAWWK_ETC="${FAWWK_ETC:-/etc/fawwk}"          # config + secrets (root only)
@@ -49,7 +49,7 @@ conf_set() {
 # ---------- app config ----------
 # Every app lives in $APPS_ETC/<name>/ (app.conf, env, token|deploy_key, history)
 # and $APPS_VAR/<name>/ (src checkout, build logs). Fields are prefixed A_.
-APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_TOKEN_USER A_GH_SOURCE A_GH_INSTALL A_DIR A_BUILD A_BUILD_ENV
+APP_FIELDS=(A_NAME A_REPO A_BRANCH A_AUTH A_TOKEN_USER A_GH_SOURCE A_GH_INSTALL A_DIR A_BUILD A_BUILD_ENV A_BUILD_CACHE
             A_PORT A_ROUTES A_STRIP A_HEALTH A_HEALTH_TIMEOUT A_MEMORY A_CPUS A_VOLUMES A_RELEASE
             A_AUTO A_STATE A_CONTAINER A_IMAGE A_COMMIT A_FAILED_COMMIT A_CREATED A_DEPLOYED)
 
