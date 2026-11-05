@@ -229,28 +229,46 @@ cmd_info() {
 }
 
 cmd_logs() {
-  local name='' follow=() tail=100 build=0
+  local name='' follow=() tail=100 build=0 raw=0
   while (($#)); do
     case $1 in
       -f | --follow) follow=(-f); shift ;;
       -n | --tail) need_arg "$@"; tail=$2; shift 2 ;;
       --build) build=1; shift ;;
+      --raw) raw=1; shift ;;
+      -h | --help) echo "Usage: sudo fawwk logs <app> [-f] [-n N] [--build] [--raw]   (--raw: exactly as Docker gives them)"; return 0 ;;
       -*) die "Unknown option: $1" ;;
       *) name=$1; shift ;;
     esac
   done
   app_require_arg "$name" logs; require_root logs; require_setup
   app_load "$name"
+  local styled=0
+  logs_styled "$raw" && styled=1
   if ((build)); then
     local last
     last=$(ls -1t "$(app_var "$name")/logs/"*.log 2>/dev/null | head -n1 || true)
     [[ -n $last ]] || die "No build logs yet."
-    hint "Build log: $last"
-    tail -n "$tail" "${follow[@]}" "$last"
+    if ((styled)); then
+      printf '\n%s%s%s %s%s%s build log %s%s %s%s\n' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "$name" "$C_RESET" \
+        "$C_MUTED" "$(date -r "$last" '+%a %e %b %H:%M')" "$G_SEP $last" "$C_RESET"
+      tail -n "$tail" "${follow[@]}" "$last" | logs_pretty build
+      printf '\n'
+    else
+      hint "Build log: $last"
+      tail -n "$tail" "${follow[@]}" "$last"
+    fi
     return
   fi
   [[ -n $A_CONTAINER ]] || die "$name isn't running. Build logs: fawwk logs $name --build"
-  docker logs --tail "$tail" "${follow[@]}" "$A_CONTAINER"
+  if ((styled)); then
+    printf '\n%s%s%s %s%s%s logs  %s%s %s commit %s %s %s%s\n' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "$name" "$C_RESET" \
+      "$C_MUTED" "$A_CONTAINER" "$G_SEP" "${A_COMMIT:0:7}" "$G_SEP" \
+      "$([[ ${#follow[@]} -gt 0 ]] && echo 'following, ctrl+c stops' || echo "last $tail lines")" "$C_RESET"
+    docker logs --timestamps --tail "$tail" "${follow[@]}" "$A_CONTAINER" 2>&1 | logs_pretty app
+  else
+    docker logs --tail "$tail" "${follow[@]}" "$A_CONTAINER"
+  fi
 }
 
 cmd_exec() {
@@ -499,6 +517,7 @@ cmd_sync() {
   [[ ${1-} == --quiet || ${1-} == -q ]] && quiet=1
   require_root sync; require_setup
   mkdir -p "$FAWWK_LOG"
+  ( update_check_daily ) >/dev/null 2>&1 || true
   # After `fawwk update`, bring a webhook receiver started by an older Fawwk up to the current settings.
   if hooks_enabled && docker inspect "$HOOKS_CONTAINER" >/dev/null 2>&1 && ! hooks_container_current; then
     if out=$(hooks_container_start); then
@@ -575,9 +594,11 @@ cmd_proxy() {
 # ---------- self update ----------
 update_usage() {
   cat <<'EOF'
-Usage: sudo fawwk update [--branch <branch>]
+Usage: sudo fawwk update [--branch <branch>] [--check]
 
 Updates Fawwk to the latest commit of the branch it's on (main unless you picked another).
+--check only checks whether a new version is out (Fawwk also checks once a day by itself, shows a
+line after commands when one is, and sends it to `fawwk notify`; UPDATE_CHECK=off turns that off).
 --branch switches to another branch, e.g. to try a pull request before it's merged:
   sudo fawwk update --branch some-feature      and back:  sudo fawwk update --branch main
 EOF
@@ -588,6 +609,7 @@ cmd_update() {
   while (($#)); do
     case $1 in
       --branch) need_arg "$@"; branch=$2; shift 2 ;;
+      --check) update_check_cmd; return 0 ;;
       -h | --help) update_usage; return 0 ;;
       *) die "Unknown option: $1 (see: fawwk update --help)" ;;
     esac

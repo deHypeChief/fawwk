@@ -38,7 +38,7 @@ EOF
 # Loads fawwk's libraries into the current (sub)shell, like bin/fawwk does.
 load_fawwk() {
   local l
-  for l in ui common git github env build proxy release notify setup create manage settings db maint doctor; do
+  for l in ui common git github env build proxy release notify updates logs setup create manage settings db maint doctor; do
     # shellcheck disable=SC1090
     source "$ROOT/lib/$l.sh"
   done
@@ -1026,6 +1026,152 @@ test_create_offers_folders() {
   mkdir -p "$SB/plain"; echo '{}' >"$SB/plain/package.json"
   menu() { echo "menu shown" >&2; return 1; }
   dir=. dir_picked=0; create_pick_dir "$SB/plain" 2>/dev/null; eq "$dir|$dir_picked" '.|1'
+}
+
+test_telegram_notifications() {
+  load_fawwk
+  local tok=123456789:AAFakeTokenForTestsOnly0123456789abcd
+  # A fake Telegram: curl gets its URL on stdin (-K -); arguments and requests are recorded.
+  cat >"$SB/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SB/curl-args.log"
+url=\$(sed -n 's/^url = "\(.*\)"$/\1/p')
+printf '%s %s\n' "\$url" "\$*" >>"$SB/telegram.log"
+case \$url in
+  */getMe) echo '{"ok":true,"result":{"username":"fawwk_test_bot"}}' ;;
+  */getUpdates) [[ -e "$SB/no-chat" ]] && echo '{"ok":true,"result":[]}' ||
+    echo '{"ok":true,"result":[{"message":{"chat":{"id":111}}},{"message":{"chat":{"id":-1002233}}}]}' ;;
+  */sendMessage) echo '{"ok":true}' ;;
+esac
+EOF
+  chmod +x "$SB/bin/curl"
+  # Setup finds the chat the bot was last messaged from, saves both, and sends a test.
+  cmd_notify telegram "$tok" 2>/dev/null
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "$NOTIFY_TELEGRAM_CHAT" -1002233
+  has "$(cat "$SB/telegram.log")" "https://api.telegram.org/bot$tok/sendMessage"
+  has "$(cat "$SB/telegram.log")" 'chat_id=-1002233'
+  hasnt "$(cat "$SB/curl-args.log")" "$tok"   # never on a command line
+  # Deploy failures reach Telegram; successes only with "all".
+  : >"$SB/telegram.log"
+  notify ok web abc 'deployed'
+  [[ ! -s $SB/telegram.log ]]
+  notify failed web abc 'web: deploy failed'
+  has "$(cat "$SB/telegram.log")" 'text=web: deploy failed'
+  # Clear errors: a bad token, and no chat yet.
+  local out
+  out=$( (cmd_notify telegram not-a-token) 2>&1) && return 1; has "$out" "doesn't look like a bot token"
+  touch "$SB/no-chat"
+  out=$( (cmd_notify telegram "$tok") 2>&1) && return 1; has "$out" 'https://t.me/fawwk_test_bot'
+  # --all with an explicit chat id.
+  rm -f "$SB/no-chat"
+  cmd_notify telegram "$tok" 42 --all 2>/dev/null
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "$NOTIFY_TELEGRAM_CHAT|$NOTIFY_ON" '42|all'
+  cmd_notify telegram off 2>/dev/null
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "${NOTIFY_TELEGRAM_TOKEN-}${NOTIFY_TELEGRAM_CHAT-}" ''
+}
+
+test_update_notices() {
+  load_fawwk
+  local o=$SB/origin home=$SB/install gc=(-c user.email=t@t -c user.name=t) out
+  version_gt 0.10.0 0.9.2; no version_gt 0.4.0 0.4.0; no version_gt 0.3.9 0.4.0
+  # A Fawwk "origin" whose branch is at FAWWK_VERSION; this server is a clone of it.
+  git init -q -b main "$o"
+  mkdir -p "$o/lib"; cp "$ROOT/lib/common.sh" "$o/lib/"
+  git -C "$o" add -A && git -C "$o" "${gc[@]}" commit -qm v1
+  git clone -q --depth 1 "file://$o" "$home"
+  FAWWK_HOME=$home
+  # Same version upstream: nothing to say.
+  update_check
+  eq "$(update_available)" ''
+  # A newer version is released upstream (an ordinary commit doesn't count: only the version).
+  sed -i "s/^FAWWK_VERSION=.*/FAWWK_VERSION=\"9.9.9\"/" "$o/lib/common.sh"
+  git -C "$o" "${gc[@]}" commit -qam "release 9.9.9"
+  cat >"$SB/bin/curl" <<EOF
+#!/usr/bin/env bash
+while ((\$#)); do [[ \$1 == -d ]] && { printf '%s\n' "\$2" >>"$SB/notified"; shift; }; shift; done
+EOF
+  chmod +x "$SB/bin/curl"
+  NOTIFY_URL=https://hooks.example.com/x
+  update_check
+  eq "$(update_available)" 9.9.9
+  has "$(cat "$SB/notified")" "Fawwk 9.9.9 is out"
+  update_check   # checked again: still one notification for this version
+  eq "$(grep -c 'Fawwk 9.9.9 is out' "$SB/notified")" 1
+  # The line after commands: in a terminal only, not for the updating commands.
+  out=$(FAWWK_UPDATE_NOTICE_FORCE=1 update_notice list 2>&1)
+  has "$out" "Fawwk 9.9.9 is out"; has "$out" "you have $FAWWK_VERSION"; has "$out" 'sudo fawwk update'
+  eq "$(FAWWK_UPDATE_NOTICE_FORCE=1 update_notice update 2>&1)" ''
+  eq "$(update_notice list 2>&1)" ''   # not a terminal here
+  eq "$(FAWWK_UPDATE_NOTICE_FORCE=1 UPDATE_CHECK=off update_notice list 2>&1)" ''
+  # The daily check runs once a day, not every minute.
+  # (A check rewrites UC_CHECKED: an old value means it was skipped.)
+  conf_set "$UPDATE_FILE" UC_CHECKED 1000
+  UPDATE_EVERY=999999999999 update_check_daily; update_load; eq "$UC_CHECKED" 1000   # checked recently: skipped
+  update_check_daily; update_load; [[ $UC_CHECKED -gt 1000 ]]                        # a day old: checks
+  conf_set "$UPDATE_FILE" UC_CHECKED 1000
+  UPDATE_CHECK=off update_check_daily; update_load; eq "$UC_CHECKED" 1000            # turned off
+  # The release page, for a GitHub remote.
+  git -C "$home" remote set-url origin https://github.com/deHypeChief/fawwk.git
+  eq "$(update_release_url 0.4.0)" https://github.com/deHypeChief/fawwk/releases/tag/v0.4.0
+}
+
+test_logs_styling() {
+  load_fawwk
+  local out
+  # Colours off (NO_COLOR) to compare the layout; UTC so times don't depend on the machine.
+  out=$(printf '%s\n' \
+    '2026-11-04T23:59:58.1Z Server listening on :3000' \
+    '2026-11-05T00:00:01.0Z {"level":30,"time":1,"pid":1,"hostname":"h","msg":"connected","db":"shop","ms":42}' \
+    '2026-11-05T00:00:02.0Z GET /api/classes 200 12ms' \
+    '2026-11-05T00:00:05.0Z {"level":"warn","message":"slow query","ms":1250}' \
+    '2026-11-05T00:00:06.0Z Error: connect ECONNREFUSED' \
+    '2026-11-05T00:00:06.0Z     at TCPConnectWrap.afterConnect (node:net:1555:16)' \
+    'no timestamp here' | TZ=UTC logs_pretty app)
+  has "$out" "$G_H$G_H Wed  4 Nov $G_H$G_H"
+  has "$out" "$G_H$G_H Thu  5 Nov $G_H$G_H"
+  has "$out" '  23:59:58       Server listening on :3000'
+  has "$out" '  00:00:01  INF  connected  db=shop ms=42'
+  hasnt "$out" 'hostname='
+  has "$out" '  00:00:02       GET /api/classes 200 12ms'
+  has "$out" '  00:00:05  WRN  slow query  ms=1250'
+  has "$out" '  00:00:06  ERR  Error: connect ECONNREFUSED'
+  has "$out" '  00:00:06           at TCPConnectWrap'
+  has "$out" '                 no timestamp here'
+  # Build logs: steps, their output, done / cached, errors.
+  out=$(printf '%s\n' '==> planning' '#5 [builder 2/6] COPY a b' '#5 CACHED' '#7 [builder 4/6] RUN npm ci' \
+    '#7 0.512 added 312 packages' '#7 DONE 2.1s' '#9 ERROR: process "npm run build" did not complete' | logs_pretty build)
+  has "$out" "$G_STEP planning"
+  has "$out" "  $G_ARROW [builder 2/6] COPY a b"
+  has "$out" "    $G_OK cached"
+  has "$out" "    $G_V added 312 packages"
+  has "$out" "    $G_OK done in 2.1s"
+  has "$out" "    $G_ERR ERROR: process"
+  # With colours, a 500 is red and the method bold, and the colour codes themselves stay intact.
+  C_RED=$'\e[31m' C_BOLD=$'\e[1m' C_RESET=$'\e[0m' C_GREEN=$'\e[32m'
+  out=$(printf '2026-11-05T00:00:04.0Z GET /x 500 3ms\n' | TZ=UTC logs_pretty app)
+  has "$out" $'\e[1mGET\e[0m /x \e[31m500\e[0m 3ms'
+  # Not a terminal and no override: unstyled.
+  no logs_styled 0
+  FAWWK_LOGS_STYLE=1 logs_styled 0
+  FAWWK_LOGS_STYLE=1 no logs_styled 1   # --raw
+}
+
+test_release_notes() {
+  local out
+  out=$("$ROOT/scripts/release-notes.sh" 0.4.0)
+  has "$out" '### New'; has "$out" 'Telegram notifications'
+  hasnt "$out" '## 0.3.0'                         # stops at the next version
+  [[ ${out:0:1} == '#' ]]                          # no leading blank line
+  has "$("$ROOT/scripts/release-notes.sh" 0.0.1)" 'See CHANGELOG.md'
+  # The version being released has notes (so a release never goes out empty).
+  load_fawwk
+  hasnt "$("$ROOT/scripts/release-notes.sh" "$FAWWK_VERSION")" 'See CHANGELOG.md'
 }
 
 # ---------- run ----------
