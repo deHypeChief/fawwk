@@ -150,18 +150,40 @@ dns_report6() {
   warn "DNS: $host also has an AAAA (IPv6) record ${bad% } that isn't this server. Delete it, or HTTPS certificates may fail."
 }
 
+# IPv4 addresses public DNS gives for HOST (Cloudflare's DNS-over-HTTPS), one per line: what visitors
+# and Let's Encrypt see, whatever this server's own resolver has cached. Empty if it can't be asked.
+dns_lookup_public() {
+  command -v jq >/dev/null 2>&1 || return 0
+  curl -fsS --max-time 5 -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$1&type=A" 2>/dev/null |
+    jq -r '.Answer[]? | select(.type == 1) | .data' 2>/dev/null | sort -u || true
+}
+
 dns_report() {
-  local host=$1 got
+  local host=$1 got pub
   if dns_points_here "$host"; then
     ok "DNS: $host → ${SERVER_IP:-this server}"
     dns_report6 "$host"
-  else
-    got=$(dns_lookup "$host" | tr '\n' ' ')
-    if [[ -z $got ]]; then
-      warn "DNS: $host doesn't resolve yet. Add an A record pointing to ${SERVER_IP:-this server}."
+    return 0
+  fi
+  # This server may still remember an answer from before the record existed ("doesn't exist" is
+  # cached too, often for an hour). Public DNS says what everyone else sees.
+  pub=$(dns_lookup_public "$host")
+  if [[ -n ${SERVER_IP-} && $'\n'$pub$'\n' == *$'\n'"$SERVER_IP"$'\n'* ]]; then
+    command -v resolvectl >/dev/null 2>&1 && resolvectl flush-caches >/dev/null 2>&1 || true
+    if dns_points_here "$host"; then
+      ok "DNS: $host → $SERVER_IP ${C_MUTED}(this server had an old answer cached; cleared it)${C_RESET}"
     else
-      warn "DNS: $host → ${got% } (expected ${SERVER_IP:-this server}). Fine if it's behind a proxy like Cloudflare."
+      ok "DNS: $host → $SERVER_IP in public DNS"
+      hint "This server still has an older answer cached, which clears itself within about an hour. Now: sudo resolvectl flush-caches"
     fi
+    dns_report6 "$host"
+    return 0
+  fi
+  got=$(dns_lookup "$host" | tr '\n' ' ')
+  if [[ -z $got ]]; then
+    warn "DNS: $host doesn't resolve yet. Add an A record pointing to ${SERVER_IP:-this server}."
+  else
+    warn "DNS: $host → ${got% } (expected ${SERVER_IP:-this server}). Fine if it's behind a proxy like Cloudflare."
   fi
 }
 

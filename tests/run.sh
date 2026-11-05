@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 FILTER=${1-}
-PASS=0 FAIL=0 FAILED=()
+PASS=0 FAIL=0 SKIP=0 FAILED=()
 
 # ---------- harness ----------
 new_sandbox() {
@@ -89,7 +89,10 @@ t() {
     new_sandbox; trap 'rm -rf "$SB"' EXIT; "test_$name") >"$out" 2>&1
   rc=$?
   set -e
-  if ((rc == 0)); then
+  if ((rc == 0)) && grep -q '^skipped' "$out"; then
+    # A test that couldn't run here (no Docker daemon, no railpack...) says so: it isn't a pass.
+    SKIP=$((SKIP + 1)); printf '  skip  %s (%s)\n' "$name" "$(grep -m1 '^skipped' "$out" | sed 's/^skipped //; s/^(//; s/)$//')"
+  elif ((rc == 0)); then
     PASS=$((PASS + 1)); printf '  ok    %s\n' "$name"
   else
     FAIL=$((FAIL + 1)); FAILED+=("$name"); printf '  FAIL  %s\n' "$name"
@@ -862,8 +865,81 @@ test_db_real_docker() {
   hasnt "$cmdlines" "${pw[0]}"; hasnt "$cmdlines" "${pw[1]}"
 }
 
+test_dockerfile_build_args_injected() {
+  load_fawwk
+  local d=$SB/df
+  mkdir -p "$d"
+  # Multi-stage, Coolify-style: build vars used in the builder, an indented FROM, a syntax directive,
+  # one ARG already declared, and a multi-line FROM.
+  printf '%s\n' '# syntax=docker/dockerfile:1.7' '  FROM node:22 AS deps' 'RUN echo deps' \
+    'FROM node:22 \' '  AS builder' '    ARG NPM_TOKEN' 'RUN echo "$VITE_URL"' 'FROM alpine' 'COPY --from=builder /x /x' >"$d/Dockerfile"
+  build_dockerfile_with_args "$d/Dockerfile" "$d/out" NPM_TOKEN VITE_URL
+  eq "$(cat "$d/out")" "$(printf '%s\n' '# syntax=docker/dockerfile:1.7' '  FROM node:22 AS deps' 'ARG NPM_TOKEN' 'ARG VITE_URL' 'RUN echo deps' \
+    'FROM node:22 \' '  AS builder' 'ARG VITE_URL' '    ARG NPM_TOKEN' 'RUN echo "$VITE_URL"' 'FROM alpine' 'COPY --from=builder /x /x')"
+  # Single stage: its one stage gets them.
+  printf 'FROM alpine\nRUN echo hi\n' >"$d/Dockerfile"
+  build_dockerfile_with_args "$d/Dockerfile" "$d/out" A
+  eq "$(cat "$d/out")" $'FROM alpine\nARG A\nRUN echo hi'
+  # A Dockerfile-specific ignore file follows the copy.
+  echo secret.txt >"$d/Dockerfile.dockerignore"
+  build_dockerfile_with_args "$d/Dockerfile" "$d/out" A
+  eq "$(cat "$d/out.dockerignore")" secret.txt
+}
+
+# Real Docker: a build var reaches the builder stage's RUN, and never the shipped image's history.
+test_dockerfile_build_args_real_docker() {
+  rm -f "$SB/bin/docker"
+  docker info >/dev/null 2>&1 || { echo "skipped (no Docker daemon)"; return 0; }
+  docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20 >/dev/null 2>&1 || { echo "skipped (no alpine image)"; return 0; }
+  load_fawwk
+  local src=$FAWWK_VAR/apps/web/src tag img
+  mkdir -p "$src"
+  printf '%s\n' 'FROM alpine:3.20 AS builder' 'RUN echo "url=$VITE_API_URL token=${NPM_TOKEN:+set}" > /built.txt' \
+    'FROM alpine:3.20' 'COPY --from=builder /built.txt /built.txt' 'RUN echo shipped' >"$src/Dockerfile"
+  add_app web A_ROUTES=web.example.com A_PORT=3000 A_STATE=new A_DIR=. A_BUILD=dockerfile
+  printf 'VITE_API_URL=https://api.example.com\nNPM_TOKEN=ghp_supersecret123\n' >"$(app_envfile web)"
+  app_load web
+  tag="t$RANDOM"; img="fawwk/web:$tag"
+  trap 'docker rmi -f "fawwk/web:'"$tag"'" >/dev/null 2>&1; rm -rf "$SB"' EXIT
+  build_image "$tag" "$SB/build.log" 2>/dev/null || { cat "$SB/build.log"; return 1; }
+  eq "$(docker run --rm "$img" cat /built.txt)" 'url=https://api.example.com token=set'
+  hasnt "$(docker history --no-trunc --format '{{.CreatedBy}}' "$img")" ghp_supersecret123
+  hasnt "$(docker image inspect "$img")" ghp_supersecret123
+}
+
+test_dns_stale_local_cache() {
+  load_fawwk
+  SERVER_IP=203.0.113.7
+  # Public DNS (fake DNS-over-HTTPS): pannel.example.com points here, missing.example.com doesn't exist.
+  cat >"$SB/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *name=pannel.example.com*) echo '{"Status":0,"Answer":[{"name":"pannel.example.com","type":1,"data":"203.0.113.7"}]}' ;;
+  *) echo '{"Status":3}' ;;
+esac
+EOF
+  # This server's resolver: still caching "doesn't exist" until resolvectl flushes it.
+  cat >"$SB/bin/resolvectl" <<EOF
+#!/usr/bin/env bash
+[[ \$1 == flush-caches ]] && touch "$SB/flushed"
+EOF
+  chmod +x "$SB/bin/curl" "$SB/bin/resolvectl"
+  dns_lookup() { [[ $1 == pannel.example.com && -e $SB/flushed ]] && echo 203.0.113.7; return 0; }
+  local out
+  out=$(dns_report pannel.example.com 2>&1)
+  has "$out" 'had an old answer cached; cleared it'
+  [[ -e $SB/flushed ]]
+  # If the flush doesn't help, say how and why instead of "doesn't resolve".
+  rm -f "$SB/flushed"; printf '#!/bin/sh\nexit 0\n' >"$SB/bin/resolvectl"
+  out=$(dns_report pannel.example.com 2>&1)
+  has "$out" 'in public DNS'; has "$out" 'sudo resolvectl flush-caches'; hasnt "$out" "doesn't resolve"
+  # Really missing: the usual warning.
+  out=$(dns_report missing.example.com 2>&1)
+  has "$out" "missing.example.com doesn't resolve yet"
+}
+
 # ---------- run ----------
 echo "Fawwk tests"
 for fn in $(declare -F | awk '{print $3}' | grep '^test_' | sed 's/^test_//'); do t "$fn"; done
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 ((FAIL == 0)) || { printf 'Failed: %s\n' "${FAILED[*]}"; exit 1; }
