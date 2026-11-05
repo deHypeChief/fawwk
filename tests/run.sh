@@ -641,6 +641,40 @@ test_build_env_passed_by_name() {
   [[ ! -e $SB/spy-SECRET ]]
 }
 
+test_build_without_cache() {
+  load_fawwk
+  spy_docker
+  mkdir -p "$FAWWK_VAR/apps/api/src"
+  printf 'FROM scratch\n' >"$FAWWK_VAR/apps/api/src/Dockerfile"
+  add_app api A_ROUTES=api.example.com A_PORT=8000 A_STATE=new A_DIR=. A_BUILD=auto
+  app_load api
+  build_image t1 "$SB/build.log" 2>/dev/null
+  hasnt "$(cat "$SB/docker.log")" --no-cache
+  # Once, for one deploy.
+  : >"$SB/docker.log"
+  FAWWK_NO_CACHE=1 build_image t2 "$SB/build.log" 2>/dev/null
+  has "$(cat "$SB/docker.log")" "build --progress=plain --no-cache -t fawwk/api:t2"
+  # Always, as an app setting, kept across loads and shown by info.
+  cmd_build api cache off >/dev/null 2>&1
+  app_load api
+  eq "$A_BUILD_CACHE" off
+  eq "$(cmd_info api --json | jq -r .build_cache)" off
+  : >"$SB/docker.log"
+  build_image t3 "$SB/build.log" 2>/dev/null
+  has "$(cat "$SB/docker.log")" "--no-cache"
+  cmd_build api cache on >/dev/null 2>&1
+  app_load api
+  eq "$(cmd_info api --json | jq -r .build_cache)" on
+  : >"$SB/docker.log"
+  build_image t4 "$SB/build.log" 2>/dev/null
+  hasnt "$(cat "$SB/docker.log")" --no-cache
+  (cmd_build api cache maybe 2>/dev/null) && return 1
+  # deploy takes --no-cache in any position and refuses unknown options.
+  has "$(cmd_deploy --help)" --no-cache
+  (cmd_deploy api --fast 2>/dev/null) && return 1
+  return 0
+}
+
 test_railpack_build() {
   command -v railpack >/dev/null || { echo "skipped (railpack not installed)"; return 0; }
   load_fawwk
