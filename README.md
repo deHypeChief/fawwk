@@ -145,6 +145,7 @@ For Bitbucket, add `--token-user <username>` to `--token-file` (app passwords ne
 fawwk list [--json]                 # all apps, state, URL
 fawwk info api [--json]             # details, CPU/RAM, limits, last failure
 fawwk deploy api                    # pull + rebuild + zero-downtime swap (--all: every app)
+fawwk deploy api --no-cache         # the same, building every step from scratch this once
 fawwk logs api -f                   # follow app logs (styled: times, levels, JSON, HTTP codes)
 fawwk logs api --build              # last build log, step by step (--raw: as Docker gives them)
 fawwk history api [--json]          # recent deploys
@@ -166,6 +167,7 @@ fawwk port api 8080
 fawwk health api /healthz --timeout 180   # path, and how long a new version gets to boot
 fawwk autodeploy api off
 fawwk build api railpack            # build method: auto | dockerfile | railpack | nixpacks | static
+fawwk build api cache off           # rebuild every step on every deploy (see below)
 fawwk buildenv api NEXT_PUBLIC_URL  # only these env vars reach the build (all | none | KEY,KEY)
 
 fawwk doctor                        # server, DNS and app health check
@@ -393,6 +395,11 @@ When output isn't a terminal (auto-deploy logs, pipes), colours, spinners and me
 - The last 3 images per app are kept for rollback (`KEEP_IMAGES`).
 - Railpack builds repos without a Dockerfile. Apps that already deployed with Nixpacks before Fawwk 0.3
   keep using it (Nixpacks is in maintenance mode upstream). Switch one with `fawwk build <app> railpack`.
+- Docker reuses a build step when its instructions and files haven't changed. A Dockerfile that
+  fetches something itself (a `git clone` of another repo, a `curl` download) keeps the first copy it
+  got. Build that app without the cache: `fawwk build <app> cache off`, or once with
+  `fawwk deploy <app> --no-cache`. A push to the other repo doesn't redeploy the app; run
+  `fawwk deploy <app>` then.
 - Moving a database to a new major version isn't automatic: back up, create a new database with
   `--version`, restore into it, then `fawwk db link` it.
 

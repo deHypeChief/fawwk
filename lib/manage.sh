@@ -3,8 +3,18 @@
 
 # ---------- deploy / restart / stop / start ----------
 cmd_deploy() {
-  local name=${1-}
-  [[ $name == -h || $name == --help ]] && { echo "Usage: sudo fawwk deploy <app> | --all   Pull the latest commit and redeploy"; return 0; }
+  local name='' a
+  for a in "$@"; do
+    case $a in
+      -h | --help)
+        echo "Usage: sudo fawwk deploy <app> | --all [--no-cache]   Pull the latest commit and redeploy"
+        echo "  --no-cache   build every step from scratch this time (fawwk build <app> cache off: always)"
+        return 0 ;;
+      --no-cache) export FAWWK_NO_CACHE=1 ;;
+      -*) [[ $a == --all ]] && name=$a || die "Unknown option: $a (see: fawwk deploy --help)" ;;
+      *) name=$a ;;
+    esac
+  done
   require_root deploy; require_setup
   if [[ $name == --all ]]; then
     local failed=() n
@@ -126,7 +136,7 @@ cmd_history() {
 # app_json — the loaded app as a JSON object (for --json output; secrets are never included).
 app_json() {
   jq -n --arg name "$A_NAME" --arg repo "$(repo_path "$A_REPO")" --arg branch "$A_BRANCH" --arg dir "${A_DIR:-.}" \
-    --arg auth "$A_AUTH" --arg build "${A_BUILD:-auto}" --arg build_env "${A_BUILD_ENV:-all}" \
+    --arg auth "$A_AUTH" --arg build "${A_BUILD:-auto}" --arg build_env "${A_BUILD_ENV:-all}" --arg build_cache "${A_BUILD_CACHE:-on}" \
     --arg routes "$A_ROUTES" --arg port "$A_PORT" --arg health "$A_HEALTH" \
     --arg health_timeout "${A_HEALTH_TIMEOUT:-$HEALTH_TIMEOUT}" --arg memory "$A_MEMORY" --arg cpus "$A_CPUS" \
     --arg volumes "$A_VOLUMES" --arg release "$A_RELEASE" --arg auto "$A_AUTO" --arg state "$(app_live_state)" \
@@ -136,6 +146,7 @@ app_json() {
     def words: split(" ") | map(select(length > 0));
     def nul: if . == "" then null else . end;
     {name: $name, repo: $repo, branch: $branch, dir: $dir, auth: $auth, build: $build, build_env: $build_env,
+     build_cache: $build_cache,
      routes: ($routes | words), urls: ($routes | words | map("https://" + .)),
      port: ($port | nul | if . then tonumber else null end), health: ($health | nul),
      health_timeout: ($health_timeout | tonumber), memory: ($memory | nul), cpus: ($cpus | nul),
@@ -202,7 +213,7 @@ cmd_info() {
   k Repo "$(repo_path "$A_REPO") @ $A_BRANCH"
   [[ $A_DIR != . ]] && k Folder "$A_DIR"
   k Access "$A_AUTH${A_GH_SOURCE:+ ($A_GH_SOURCE)}"
-  k Build "${A_BUILD:-auto}${A_BUILD_ENV:+ ${C_MUTED}(build-time env: $A_BUILD_ENV)${C_RESET}}"
+  k Build "${A_BUILD:-auto}${A_BUILD_ENV:+ ${C_MUTED}(build-time env: $A_BUILD_ENV)${C_RESET}}${A_BUILD_CACHE:+ ${C_MUTED}(cache ${A_BUILD_CACHE})${C_RESET}}"
   if [[ -n $A_ROUTES ]]; then
     for r in $A_ROUTES; do k URL "${C_ACCENT2}$(route_url "$r")${C_RESET}"; done
     k Port "$A_PORT"
@@ -484,8 +495,23 @@ cmd_build() {
   ctx=$(build_context)
   if [[ -z $t ]]; then
     info "Build method for $1: ${A_BUILD:-auto}"
+    [[ ${A_BUILD_CACHE:-on} == off ]] && info "Build cache: off (every step is rebuilt)"
     [[ -d $ctx ]] && hint "Next deploy: $(build_describe "$(build_resolve "$ctx" "${A_BUILD:-auto}")" "$ctx")"
-    hint "Change with: fawwk build $1 auto|dockerfile|railpack|nixpacks|static"
+    hint "Change with: fawwk build $1 auto|dockerfile|railpack|nixpacks|static   $G_SEP   fawwk build $1 cache on|off"
+    return 0
+  fi
+  if [[ $t == cache ]]; then
+    case ${3-} in
+      off | no)
+        app_set A_BUILD_CACHE off
+        ok "Build cache off for $1: every deploy rebuilds every step"
+        hint "For Dockerfiles that fetch things Docker can't see change (a git clone, a download). Builds take longer." ;;
+      on | yes)
+        app_set A_BUILD_CACHE ''
+        ok "Build cache on for $1" ;;
+      '') info "Build cache for $1: ${A_BUILD_CACHE:-on}" ;;
+      *) die "Usage: fawwk build $1 cache on|off" ;;
+    esac
     return 0
   fi
   [[ $t =~ ^(auto|dockerfile|railpack|nixpacks|static)$ ]] || die "Use: fawwk build $1 auto|dockerfile|railpack|nixpacks|static"
