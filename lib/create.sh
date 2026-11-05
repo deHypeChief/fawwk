@@ -98,12 +98,13 @@ cmd_create() {
 
   local def_branch
   def_branch=$(git_default_branch || true)
-  while true; do
+  [[ -z $branch ]] && is_interactive && create_pick_branch "$def_branch"
+  while [[ -z $A_BRANCH ]]; do
     ask A_BRANCH "Branch to deploy" "${branch:-${def_branch:-main}}"
     git_branch_exists && break
     warn "Branch '$A_BRANCH' doesn't exist in the repo."
     is_interactive || die "Branch not found: $A_BRANCH"
-    branch=''
+    branch='' A_BRANCH=''
   done
 
   step "Fetching code"
@@ -216,6 +217,28 @@ create_pick_repo() {
   }
   menu pick "Which repo?" 1 "${repos[@]}" "Another repo (type its URL or owner/name)"
   ((pick <= ${#repos[@]})) && repo=${repos[pick - 1]}
+  return 0
+}
+
+# Sets A_BRANCH from a menu of the repo's branches (its default branch first), or leaves it empty for
+# "Another branch", which then asks. A repo with a single branch uses it without asking.
+create_pick_branch() {
+  local def=${1-} branches=() pick
+  mapfile -t branches < <(git_branches "$def")
+  ((${#branches[@]})) || return 0
+  if ((${#branches[@]} == 1)); then
+    A_BRANCH=${branches[0]}
+    ok "Branch: $A_BRANCH ${C_MUTED}(the repo's only branch)${C_RESET}"
+    return 0
+  fi
+  ((${#branches[@]} > CREATE_PICK_MAX)) && {
+    hint "Showing $CREATE_PICK_MAX of ${#branches[@]} branches; pick \"Another branch\" to type any of them."
+    branches=("${branches[@]:0:CREATE_PICK_MAX}")
+  }
+  local labels=("${branches[@]}")
+  [[ -n $def && ${labels[0]} == "$def" ]] && labels[0]="$def ${C_MUTED}(default)${C_RESET}"
+  menu pick "Branch to deploy" 1 "${labels[@]}" "Another branch (type its name)"
+  ((pick <= ${#branches[@]})) && A_BRANCH=${branches[pick - 1]}
   return 0
 }
 

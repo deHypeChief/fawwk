@@ -13,7 +13,8 @@
   (`resolvectl flush-caches`) and says so, instead of "doesn't resolve yet".
 
 - **`fawwk create` lists your repos:** with GitHub connected, it offers the repos the GitHub App can
-  reach (most recently pushed first) in a menu, with "Another repo" for typing any URL.
+  reach (most recently pushed first) in a menu, with "Another repo" for typing any URL. The branch is
+  picked the same way, the repo's default branch first; a repo with one branch just uses it.
 
 ### Fixed
 

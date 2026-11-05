@@ -116,7 +116,7 @@ The guided flow asks for:
    first). Or type `https://github.com/you/app` or just `you/app`. If the connected GitHub App is installed on
    it, that's all. Otherwise, for a private repo, Fawwk offers to connect GitHub, a read-only **deploy
    key** for you to paste into GitHub, or a personal access token.
-2. **Branch:** defaults to the repo's default branch.
+2. **Branch:** pick from the repo's branches (its default branch first), or type one.
 3. **Folder:** for monorepos, e.g. `apps/web`.
 4. **Domains:** `app.example.com`, `example.com`, `example.com/api`, several at once, or `none` for a
    background worker. Path routes strip the prefix by default (`/api/users` reaches the app as `/users`).
