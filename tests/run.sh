@@ -951,6 +951,36 @@ test_html_escape_survives_bash_52() {
   jq -e . <<<"$back" >/dev/null
 }
 
+test_create_offers_installed_repos() {
+  load_fawwk
+  mkdir -p "$FAWWK_ETC/github/fawwk-test"
+  openssl genrsa -out "$FAWWK_ETC/github/fawwk-test/key.pem" 2048 2>/dev/null
+  printf 'GH_APP_ID=1\nGH_SLUG=fawwk-test\nGH_OWNER=me\n' >"$FAWWK_ETC/github/fawwk-test/app.conf"
+  # A fake GitHub: two installations; one repo shows up in both; push dates decide the order.
+  cat >"$SB/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+url=''; for a in "$@"; do [[ $a == https://* ]] && url=$a; done
+case $url in
+  */app/installations) echo '[{"id":11},{"id":22}]' ;;
+  */installations/11/access_tokens) echo '{"token":"t11"}' ;;
+  */installations/22/access_tokens) echo '{"token":"t22"}' ;;
+  */installation/repositories*)
+    if [[ "$*" == *t11* ]]; then
+      echo '{"repositories":[{"full_name":"me/old","pushed_at":"2025-01-01T00:00:00Z"},{"full_name":"me/web","pushed_at":"2026-11-05T10:00:00Z"}]}'
+    else
+      echo '{"repositories":[{"full_name":"acme/api","pushed_at":"2026-11-04T10:00:00Z"},{"full_name":"me/web","pushed_at":"2026-11-05T10:00:00Z"}]}'
+    fi ;;
+esac
+EOF
+  chmod +x "$SB/bin/curl"
+  eq "$(gh_installed_repos | tr '\n' ' ')" 'me/web acme/api me/old '
+  # The picker: the first entry by default, and "Another repo" leaves it to the usual question.
+  local repo=''
+  menu() { printf -v "$1" '%s' "${PICK:-1}"; }
+  create_pick_repo 2>/dev/null; eq "$repo" me/web
+  repo=''; PICK=4 create_pick_repo 2>/dev/null; eq "$repo" ''
+}
+
 # ---------- run ----------
 echo "Fawwk tests"
 for fn in $(declare -F | awk '{print $3}' | grep '^test_' | sed 's/^test_//'); do t "$fn"; done

@@ -112,7 +112,8 @@ sudo fawwk create
 
 The guided flow asks for:
 
-1. **Repo:** `https://github.com/you/app` or just `you/app`. If the connected GitHub App is installed on
+1. **Repo:** with GitHub connected, pick one from the repos the app is installed on (most recently pushed
+   first). Or type `https://github.com/you/app` or just `you/app`. If the connected GitHub App is installed on
    it, that's all. Otherwise, for a private repo, Fawwk offers to connect GitHub, a read-only **deploy
    key** for you to paste into GitHub, or a personal access token.
 2. **Branch:** defaults to the repo's default branch.
