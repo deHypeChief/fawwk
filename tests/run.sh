@@ -938,6 +938,19 @@ EOF
   has "$out" "missing.example.com doesn't resolve yet"
 }
 
+test_html_escape_survives_bash_52() {
+  load_fawwk
+  # On bash 5.2+ (patsub_replacement), an unescaped & in a replacement means the matched text: this
+  # produced "quot; and an invalid GitHub App manifest.
+  eq "$(html_escape $'{"a":"<b>&\'"}')" '{&quot;a&quot;:&quot;&lt;b&gt;&amp;&#39;&quot;}'
+  # The manifest Fawwk sends, escaped as in `github connect`, reads back as the same JSON.
+  local m back
+  m=$(jq -nc --arg name fawwk-x --arg base https://panel.example.com '{name: $name, url: $base, hook_attributes: {url: ($base + "/hooks/github")}}')
+  back=$(python3 -I -c 'import html, sys; print(html.unescape(sys.argv[1]))' "$(html_escape "$m")")
+  eq "$back" "$m"
+  jq -e . <<<"$back" >/dev/null
+}
+
 # ---------- run ----------
 echo "Fawwk tests"
 for fn in $(declare -F | awk '{print $3}' | grep '^test_' | sed 's/^test_//'); do t "$fn"; done

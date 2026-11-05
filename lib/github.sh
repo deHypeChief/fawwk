@@ -369,7 +369,7 @@ github_connect() {
   if [[ -n $org ]]; then action="https://github.com/organizations/$org/settings/apps/new?state=$state"
   else action="https://github.com/settings/apps/new?state=$state"
   fi
-  manifest=${manifest//&/&amp;}; manifest=${manifest//\"/&quot;}; manifest=${manifest//</&lt;}; manifest=${manifest//>/&gt;}
+  manifest=$(html_escape "$manifest")
   page="$HOOKS_DIR/pages/$state.html"
   cat >"$page" <<EOF
 <!doctype html><html><head><meta charset="utf-8"><title>Fawwk: connect GitHub</title></head>
