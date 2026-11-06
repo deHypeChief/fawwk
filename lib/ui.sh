@@ -25,11 +25,13 @@ case ${LC_ALL:-${LC_CTYPE:-${LANG-}}} in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) ;; 
 if ((UI_UNICODE)); then
   G_STEP='●' G_HANG='⎿' G_OK='✓' G_WARN='▲' G_ERR='✗' G_ASK='?' G_PROMPT='❯' G_LOGO='◆'
   G_DOT='●' G_ARROW='→' G_SEP='·' G_ELLIPSIS='…'
+  G_CLOUD='☁'
   G_TL='╭' G_TR='╮' G_BL='╰' G_BR='╯' G_H='─' G_V='│'
   UI_SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 else
   G_STEP='*' G_HANG='\_' G_OK='+' G_WARN='!' G_ERR='x' G_ASK='?' G_PROMPT='>' G_LOGO='#'
   G_DOT='*' G_ARROW='->' G_SEP='-' G_ELLIPSIS='...'
+  G_CLOUD='~'
   G_TL='+' G_TR='+' G_BL='+' G_BR='+' G_H='-' G_V='|'
   UI_SPIN=('|' '/' '-' '\')
 fi
@@ -107,6 +109,7 @@ hint() { ui_lead; printf '%s%s%s%s\n' "$UI_LEAD" "$C_MUTED" "$*" "$C_RESET" >&2;
 ok()   { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_GREEN" "$G_OK" "$C_RESET" "$*" >&2; }
 UI_WARNINGS=0   # counted so a summary (e.g. doctor's) doesn't call a run with warnings "all good"
 warn() { UI_WARNINGS=$((UI_WARNINGS + 1)); ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_YELLOW" "$G_WARN" "$C_RESET" "$*" >&2; }
+cloud() { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_ACCENT" "$G_CLOUD" "$C_RESET" "$*" >&2; }   # fine, behind Cloudflare
 err()  { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_RED" "$G_ERR" "$C_RESET" "$*" >&2; }
 die()  { spin_stop; err "$*"; FAWWK_DIED=1; exit 1; }
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }

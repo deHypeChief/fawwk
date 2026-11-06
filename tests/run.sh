@@ -154,7 +154,7 @@ test_proxy_routes_order_and_states() {
   add_app worker A_ROUTES=
   local out
   out=$(proxy_render)
-  has "$out" $'api.example.com {\n\tencode zstd gzip\n\t# app: api\n\thandle {\n\t\treverse_proxy fawwk-api-1:8000'
+  has "$out" $'api.example.com {\n\timport fawwk_check\n\tencode zstd gzip\n\t# app: api\n\thandle {\n\t\treverse_proxy fawwk-api-1:8000'
   # Longest path first; the stopped app answers 503 and keeps its prefix.
   has "$out" $'@r1 path /api/v2 /api/v2/*\n\thandle @r1 {\n\t\trespond "Service unavailable" 503'
   has "$out" $'@r2 path /api /api/*\n\thandle @r2 {\n\t\turi strip_prefix /api\n\t\treverse_proxy fawwk-api-1:8000'
@@ -1056,6 +1056,56 @@ EOF
   # Really missing: the usual warning.
   out=$(dns_report missing.example.com 2>&1)
   has "$out" "missing.example.com doesn't resolve yet"
+}
+
+test_dns_proxied_origin_check() {
+  load_fawwk
+  SERVER_IP=203.0.113.7
+  is_cloudflare_ip 104.21.56.28; is_cloudflare_ip 172.67.176.25; is_cloudflare_ip 162.159.1.1
+  local ip
+  for ip in 8.8.8.8 203.0.113.7 104.15.255.255 nonsense; do ! is_cloudflare_ip "$ip" || return 1; done
+  ! all_cloudflare || return 1
+  ! all_cloudflare 104.21.56.28 8.8.8.8 || return 1
+  add_app web A_ROUTES=web.example.com A_STATE=running A_CONTAINER=fawwk-web-1 A_PORT=3000
+  mkdir -p "$CADDY_DIR"
+  proxy_render >"$CADDY_DIR/Caddyfile"
+  local token out
+  token=$(check_token)
+  [[ $token =~ ^[0-9a-f]{32}$ ]]
+  eq "$(check_token)" "$token"   # made once
+  has "$(cat "$CADDY_DIR/Caddyfile")" $'(fawwk_check) {\n\thandle /.well-known/fawwk-check {\n\t\trespond "'"$token"'" 200'
+  has "$(cat "$CADDY_DIR/Caddyfile")" $'http:// {\n\timport fawwk_check'
+  # Fake visitors' view: DoH knows nothing; each host's probe answers differently.
+  cat >"$SB/bin/curl" <<EOF
+#!/usr/bin/env bash
+hdr=/dev/null url=''
+while ((\$#)); do case \$1 in -D) hdr=\$2; shift ;; http*) url=\$1 ;; esac; shift; done
+[[ \$url == *dns-query* ]] && { echo '{"Status":3}'; exit 0; }
+case \$url in
+  http://here.*) printf 'server: cloudflare\r\n' >"\$hdr"; printf '%s\n200' "$token" ;;
+  http://loop.*) exit 47 ;;
+  http://down.*) printf 'server: cloudflare\r\n' >"\$hdr"; printf 'error\n521' ;;
+  http://other.*) printf 'server: nginx\r\n' >"\$hdr"; printf 'Not found\n404' ;;
+  http://web.*) printf 'server: cloudflare\r\n' >"\$hdr"; printf 'error\n525' ;;
+  http://new.*) printf 'server: cloudflare\r\n' >"\$hdr"; printf 'error\n525' ;;
+  *) exit 7 ;;
+esac
+EOF
+  chmod +x "$SB/bin/curl"
+  dns_lookup() { case $1 in elsewhere.*) echo 198.51.100.9 ;; other.*) echo 104.21.56.28 ;; *) printf '104.21.56.28\n172.67.176.25\n' ;; esac; }
+  out=$(dns_report here.example.com 2>&1)
+  has "$out" 'here.example.com is proxied via Cloudflare and reaches this server'; hasnt "$out" "$G_WARN"
+  has "$(dns_report loop.example.com 2>&1)" 'SSL/TLS mode is Flexible'
+  has "$(dns_report down.example.com 2>&1)" "Cloudflare can't reach its server (error 521)"
+  has "$(dns_report other.example.com 2>&1)" 'Cloudflare sends it to a different server. In Cloudflare, set the A record to 203.0.113.7'
+  has "$(dns_report web.example.com 2>&1)" 'The certificate may not be issued yet'      # an app uses it
+  has "$(dns_report new.example.com 2>&1)" 'once an app uses this address'              # nothing uses it yet
+  out=$(dns_report quiet.example.com 2>&1)
+  has "$out" 'quiet.example.com is proxied via Cloudflare'; has "$out" "Couldn't confirm"
+  has "$(dns_report elsewhere.example.com 2>&1)" 'elsewhere.example.com → 198.51.100.9, not this server'
+  # Warnings count toward doctor's summary; the cloud lines don't.
+  UI_WARNINGS=0; dns_report here.example.com 2>/dev/null; eq "$UI_WARNINGS" 0
+  dns_report other.example.com 2>/dev/null; eq "$UI_WARNINGS" 1
 }
 
 test_html_escape_survives_bash_52() {

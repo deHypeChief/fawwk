@@ -184,11 +184,109 @@ dns_report() {
     return 0
   fi
   got=$(dns_lookup "$host" | tr '\n' ' ')
+  got=${got% }
   if [[ -z $got ]]; then
     warn "DNS: $host doesn't resolve yet. Add an A record pointing to ${SERVER_IP:-this server}."
-  else
-    warn "DNS: $host → ${got% } (expected ${SERVER_IP:-this server}). Fine if it's behind a proxy like Cloudflare."
+    return 0
   fi
+  local want=${SERVER_IP:-this server} cf=0 res
+  # shellcheck disable=SC2086
+  all_cloudflare $got && cf=1
+  # DNS alone can't tell where a proxy sends traffic, so ask: only this server knows its check token.
+  res=$(origin_probe "$host")
+  case $res in
+    here)
+      if ((cf)); then cloud "DNS: $host is proxied via Cloudflare and reaches this server"
+      else ok "DNS: $host → $got, a proxy in front of this server"; fi ;;
+    loop)
+      if ((cf)); then warn "DNS: $host is proxied via Cloudflare, but its SSL/TLS mode is Flexible, so every visit redirects forever. In Cloudflare: SSL/TLS → Overview → Full (strict)."
+      else warn "DNS: $host → $got, a proxy that redirects forever. Have it connect to this server over HTTPS."; fi ;;
+    cf:521 | cf:522 | cf:523)
+      warn "DNS: $host is proxied via Cloudflare, but Cloudflare can't reach its server (error ${res#cf:}). In Cloudflare, set the A record to $want, and keep ports 80 and 443 open." ;;
+    cf:525 | cf:526)
+      if host_routed "$host"; then
+        warn "DNS: $host is proxied via Cloudflare, but the HTTPS connection to this server fails (error ${res#cf:}). The certificate may not be issued yet: fawwk proxy logs"
+      else
+        cloud "DNS: $host is proxied via Cloudflare"
+        hint "It can be checked end to end once an app uses this address."
+      fi ;;
+    other | cf:*)
+      if ((cf)); then warn "DNS: $host is proxied via Cloudflare, but Cloudflare sends it to a different server. In Cloudflare, set the A record to $want."
+      else warn "DNS: $host → $got, a different server. Change the A record to $want."; fi ;;
+    *) # Couldn't check (no answer, or the proxy isn't running here).
+      if ((cf)); then
+        cloud "DNS: $host is proxied via Cloudflare"
+        hint "Couldn't confirm it reaches this server. Cloudflare's SSL/TLS mode must be Full or Full (strict)."
+      else warn "DNS: $host → $got, not this server (${want}). Change the A record, unless a proxy sits in front."; fi ;;
+  esac
+}
+
+# ---------- origin check: does traffic for a host really reach this server? ----------
+# Cloudflare's published IPv4 ranges (https://www.cloudflare.com/ips-v4).
+CF_RANGES='173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18
+108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17
+162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22'
+
+# shellcheck disable=SC2086 # split on dots on purpose
+ip_to_int() { local IFS=.; set -- $1; printf '%s' $((($1 << 24) + ($2 << 16) + ($3 << 8) + $4)); }
+
+# is_cloudflare_ip IP — 0 if IP is in one of Cloudflare's ranges.
+is_cloudflare_ip() {
+  [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  local ip cidr net bits
+  ip=$(ip_to_int "$1")
+  for cidr in $CF_RANGES; do
+    net=$(ip_to_int "${cidr%/*}") bits=${cidr#*/}
+    (((ip >> (32 - bits)) == (net >> (32 - bits)))) && return 0
+  done
+  return 1
+}
+
+# all_cloudflare IP... — 0 if there is at least one IP and every one is Cloudflare's.
+all_cloudflare() {
+  (($#)) || return 1
+  local ip
+  for ip; do is_cloudflare_ip "$ip" || return 1; done
+}
+
+CHECK_PATH=/.well-known/fawwk-check
+
+# This server's check token (made once): Caddy answers it at CHECK_PATH on every host.
+check_token() {
+  local f=$FAWWK_ETC/check-token t
+  if [[ ! -s $f ]]; then
+    t=$(openssl rand -hex 16 2>/dev/null || printf '%04x%04x%04x%04x' $RANDOM $RANDOM $RANDOM $RANDOM)
+    printf '%s\n' "$t" >"$f" 2>/dev/null || return 1
+  fi
+  tr -cd '0-9a-f' <"$f"
+}
+
+# host_routed HOST — 0 if the proxy has a site block for HOST (an app or the panel uses it).
+host_routed() { [[ -f $CADDY_DIR/Caddyfile ]] && grep -qxF "$1 {" "$CADDY_DIR/Caddyfile"; }
+
+# origin_probe HOST — fetches CHECK_PATH through HOST the way a visitor would and prints:
+#   here (it reached this server), loop (endless redirects), cf:CODE (a Cloudflare error page),
+#   other (some other server answered) or unknown (no answer, or the proxy can't answer yet).
+origin_probe() {
+  local host=$1 token out code body headers rc=0
+  token=$(check_token) && [[ -n $token ]] || { echo unknown; return 0; }
+  # A proxy config from before this check existed doesn't answer it yet: regenerate it once.
+  if ! grep -qF "$token" "$CADDY_DIR/Caddyfile" 2>/dev/null; then
+    [[ $EUID -eq 0 ]] && proxy_running 2>/dev/null && proxy_reload >/dev/null 2>&1 || true
+    grep -qF "$token" "$CADDY_DIR/Caddyfile" 2>/dev/null || { echo unknown; return 0; }
+  fi
+  headers=$(mktemp)
+  # -k: a certificate that isn't issued yet shouldn't hide the answer; the token is the proof.
+  out=$(curl -sS -k -L --max-redirs 6 --max-time 10 -D "$headers" -w '\n%{http_code}' \
+    "http://$host$CHECK_PATH" 2>/dev/null) || rc=$?
+  code=${out##*$'\n'} body=${out%$'\n'*}
+  if ((rc == 47)); then echo loop
+  elif [[ $body == "$token" ]]; then echo here
+  elif ((rc != 0)) || [[ -z $code || $code == 000 ]]; then echo unknown
+  elif [[ $code == 5[0-9][0-9] ]] && grep -qi '^server: *cloudflare' "$headers"; then echo "cf:$code"
+  else echo other
+  fi
+  rm -f "$headers"
 }
 
 # ---------- validation (print a reason on failure) ----------

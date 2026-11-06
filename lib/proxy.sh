@@ -58,10 +58,17 @@ proxy_render() (
   printf '{\n\temail %s\n}\n\n' "${EMAIL:-admin@localhost}"
   printf 'import /etc/caddy/custom/*.caddy\n\n'
 
+  # Every host answers the check token, so the DNS check can tell whether traffic for a domain
+  # really reaches this server, even behind Cloudflare or another proxy (see origin_probe).
+  printf '(fawwk_check) {\n\thandle %s {\n\t\trespond "%s" 200\n\t}\n}\n\n' "$CHECK_PATH" "$(check_token)"
+  # Plain-HTTP catch-all for hosts without a site of their own (no app yet, the wildcard check).
+  # Hosts with a site keep Caddy's automatic redirect to HTTPS, which it places before a catch-all.
+  printf 'http:// {\n\timport fawwk_check\n\thandle {\n\t\trespond 404\n\t}\n}\n\n'
+
   # GitHub webhooks and the one-click GitHub App setup, handled by the fawwk-hooks container.
   # Oversized bodies are cut off here, before they reach it (same limit as MAX_BODY in hooks.py).
   if [[ -n ${PANEL_HOST-} && -f $FAWWK_ETC/hooks.enabled ]]; then
-    printf '%s {\n\tencode zstd gzip\n\t@hooks path /hooks/* /github/*\n\thandle @hooks {\n\t\trequest_body {\n\t\t\tmax_size 4MiB\n\t\t}\n\t\treverse_proxy fawwk-hooks:8000\n\t}\n\thandle {\n\t\trespond "Fawwk" 404\n\t}\n}\n\n' "$PANEL_HOST"
+    printf '%s {\n\timport fawwk_check\n\tencode zstd gzip\n\t@hooks path /hooks/* /github/*\n\thandle @hooks {\n\t\trequest_body {\n\t\t\tmax_size 4MiB\n\t\t}\n\t\treverse_proxy fawwk-hooks:8000\n\t}\n\thandle {\n\t\trespond "Fawwk" 404\n\t}\n}\n\n' "$PANEL_HOST"
   fi
 
   ((${#rows[@]})) || exit 0
@@ -81,6 +88,7 @@ proxy_render() (
       if (host != cur) {
         close_host(); cur = host; hasroot = 0; n = 0
         print host " {"
+        print "\timport fawwk_check"
         print "\tencode zstd gzip"
       }
       print "\t# app: " app
