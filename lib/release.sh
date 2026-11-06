@@ -61,7 +61,8 @@ health_wait() {
     read -r state restarts < <(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null || echo 'gone 0')
     if [[ $state == exited || $state == dead || $state == gone ]] || ((restarts > 1)); then
       spin_stop
-      err "The container crashed (state: $state, restarts: $restarts)."
+      if ((restarts > 1)); then err "The new container keeps crashing (restarted $restarts times)."
+      else err "The new container stopped (${state/gone/removed})."; fi
       [[ $(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null) == true ]] &&
         hint "It ran out of memory (limit: ${A_MEMORY:-none}). Raise it with: fawwk limits $A_NAME memory=1g"
       return 1
@@ -103,7 +104,7 @@ release_command() {
   if ((rc != 0)); then
     docker rm -f "$cname" >/dev/null 2>&1 || true
     err "Release command failed (exit $rc) after $((SECONDS - t0))s. Last lines:"
-    tail -n 20 "$log" | ui_quote
+    tail -n 20 "$log" | ui_quote --error
     hint "The current version stays live. Change it with: fawwk release $A_NAME \"<command>\""
     return 1
   fi
@@ -132,7 +133,7 @@ release_image() {
 
   if ! health_wait "$cname"; then
     err "Keeping the current version live. Last logs from the new container:"
-    docker logs --tail 40 "$cname" 2>&1 | ui_quote
+    docker logs --tail 40 "$cname" 2>&1 | ui_quote --error
     docker rm -f "$cname" >/dev/null 2>&1 || true
     return 1
   fi

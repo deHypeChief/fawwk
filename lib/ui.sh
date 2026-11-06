@@ -114,12 +114,58 @@ err()  { ui_lead; printf '%s%s%s%s %s\n' "$UI_LEAD" "$C_RED" "$G_ERR" "$C_RESET"
 die()  { spin_stop; err "$*"; FAWWK_DIED=1; exit 1; }
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
 
-# Indents piped text (logs) under the current step, dimmed.
+# Lines in error output worth showing in red (matched lowercase).
+UI_ERR_RE='(error|exception|fatal|panic|fail|denied|refused|cannot|can.t |unable to|timed out|eservfail|econn|enotfound|eaddrinuse|traceback|killed|segmentation fault)'
+
+UI_WARN_RE='(warn|deprecat)'
+
+# Indents piped text (logs) under the current step.
+# ui_quote --error: for logs of something that failed. Red bar, error lines in red, warnings in
+# yellow, stack frames
+# and source excerpts dimmed, runs of blank lines squeezed, and a block that repeats right after
+# itself (a retry loop logging the same error) shown once with a count.
 ui_quote() {
   local line
+  if [[ ${1-} != --error ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      printf '     %s%s%s %s\n' "$C_BORDER" "$G_V" "$C_RESET" "$line" >&2
+    done
+    return 0
+  fi
+  local para=() key prev='' repeats=0 printed=0
+  _uq_line() {
+    local l=$1 c=''
+    if [[ $l =~ ^[[:space:]]*(at[[:space:]]|[0-9]+[[:space:]]*\||\^|File[[:space:]]\") ]]; then c=$C_MUTED
+    elif [[ ${l,,} =~ $UI_ERR_RE ]]; then c=$C_RED
+    elif [[ ${l,,} =~ $UI_WARN_RE ]]; then c=$C_YELLOW; fi
+    printf '     %s%s%s %s%s%s\n' "$C_RED" "$G_V" "$C_RESET" "$c" "$l" "${c:+$C_RESET}" >&2
+  }
+  _uq_repeats() {
+    ((repeats)) || return 0
+    printf '     %s%s%s %s(the same %s more time%s)%s\n' "$C_RED" "$G_V" "$C_RESET" "$C_MUTED" \
+      "$repeats" "$( ((repeats == 1)) || echo s)" "$C_RESET" >&2
+    repeats=0
+  }
+  _uq_flush() {
+    ((${#para[@]})) || return 0
+    key=$(printf '%s\n' "${para[@]}")
+    if [[ $key == "$prev" ]]; then
+      repeats=$((repeats + 1))
+    else
+      _uq_repeats
+      ((printed)) && printf '     %s%s%s\n' "$C_RED" "$G_V" "$C_RESET" >&2
+      local l
+      for l in "${para[@]}"; do _uq_line "$l"; done
+      prev=$key printed=1
+    fi
+    para=()
+  }
   while IFS= read -r line || [[ -n $line ]]; do
-    printf '     %s%s%s %s\n' "$C_BORDER" "$G_V" "$C_RESET" "$line" >&2
+    line=${line%$'\r'}
+    if [[ -z ${line//[[:space:]]/} ]]; then _uq_flush; else para+=("$line"); fi
   done
+  _uq_flush; _uq_repeats
+  unset -f _uq_line _uq_repeats _uq_flush
 }
 
 # ui_columns ITEM... — lists items in aligned columns (top to bottom, like ls), indented under the

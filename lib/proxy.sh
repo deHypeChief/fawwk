@@ -115,7 +115,7 @@ proxy_reload() {
   proxy_running || proxy_ensure
   if ! docker exec "$FAWWK_PROXY" caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >"$vlog" 2>&1; then
     err "The generated proxy config is invalid, keeping the current one:"
-    grep -iE 'error|invalid' "$vlog" | tail -n 5 | ui_quote || true
+    grep -iE 'error|invalid' "$vlog" | tail -n 5 | ui_quote --error || true
     rm -f "$new"
     return 1
   fi

@@ -453,7 +453,7 @@ db_create() {
   if ! db_run || ! db_wait_ready 120; then
     spin_stop
     err "The database didn't start. Its last log lines:"
-    docker logs --tail 20 "$(db_container "$name")" 2>&1 | ui_quote
+    docker logs --tail 20 "$(db_container "$name")" 2>&1 | ui_quote --error
     info "Container: $(docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$(db_container "$name")" 2>&1)"
     info "Readiness check said: $(db_ready_output 2>&1 | tail -n 3 | tr '\n' ' ')"
     # MongoDB 5+ dies with an illegal instruction (exit 132) on CPUs without AVX.
@@ -499,9 +499,27 @@ db_info() {
 
 # db_link_apply APP VAR — sets the loaded database's URL on APP and offers a restart.
 db_link_apply() {
-  local app=$1 var=$2 tmp
+  local app=$1 var=$2 tmp f url old k like similar=()
+  f=$(app_envfile "$app") url=$(db_url)
+  # Say so before replacing a value the app already has (often one added by hand).
+  if env_has "$f" "$var"; then
+    old=$(grep -m1 "^$var=" "$f" 2>/dev/null | cut -d= -f2-) || true
+    if [[ $old != "$url" ]]; then
+      warn "$app already has $var set. Linking replaces it with the $D_NAME URL; the old value isn't kept."
+      confirm "Replace $var?" Y || die "Nothing changed. Link under another name with: fawwk db link $D_NAME $app --as <VAR>"
+    fi
+  fi
+  # A similar variable (MONGODB_URI next to MONGODB_URL...) may be the one the code actually reads.
+  case $D_TYPE in postgres) like='DATABASE|POSTGRES|PG' ;; redis) like='REDIS' ;; mongodb) like='MONGO' ;; esac
+  while IFS= read -r k; do
+    [[ -n $k && $k != "$var" && $k =~ ($like) && $k =~ (URL|URI|DSN|HOST|CONN) ]] && similar+=("$k")
+  done < <(env_keys "$f" | sort -u)
+  if ((${#similar[@]})); then
+    warn "$app also has ${similar[*]}. If its code reads that instead of $var, it keeps using the old value."
+    hint "Link under that name instead: fawwk db link $D_NAME $app --as ${similar[0]}"
+  fi
   tmp=$(mktemp)
-  printf '%s=%s\n' "$var" "$(db_url)" >"$tmp"
+  printf '%s=%s\n' "$var" "$url" >"$tmp"
   env_save "$app" "$tmp"
   rm -f "$tmp"
   db_links_add "$app" "$var"
@@ -614,7 +632,7 @@ db_restore_cmd() {
   if ! db_restore_file "$file" >"$FAWWK_LOG/db-restore-$name.log" 2>&1; then
     spin_stop
     err "Restore failed. Last lines:"
-    tail -n 15 "$FAWWK_LOG/db-restore-$name.log" | ui_quote
+    tail -n 15 "$FAWWK_LOG/db-restore-$name.log" | ui_quote --error
     [[ -n ${safety-} ]] && hint "Go back to the data from before: fawwk db restore $name $safety"
     FAWWK_DIED=1; exit 1
   fi

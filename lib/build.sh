@@ -302,7 +302,7 @@ build_image() {
   if ! wait "$pid"; then
     spin_stop
     err "Build failed after $((SECONDS - t0))s. Last lines of the build log:"
-    tail -n 30 "$log" | ui_quote
+    tail -n 30 "$log" | ui_quote --error
     hint "Full log: $log"
     return 1
   fi

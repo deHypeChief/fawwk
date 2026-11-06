@@ -663,7 +663,7 @@ cmd_update() {
   [[ $("${g[@]}" rev-parse --is-shallow-repository 2>/dev/null) == true ]] && depth=(--depth 1)
   if ! "${g[@]}" fetch -q "${depth[@]}" origin "$branch" 2>"$FAWWK_VAR/update.err"; then
     spin_stop
-    tail -n 3 "$FAWWK_VAR/update.err" | ui_quote
+    tail -n 3 "$FAWWK_VAR/update.err" | ui_quote --error
     die "Couldn't fetch '$branch' from $("${g[@]}" remote get-url origin 2>/dev/null)."
   fi
   spin_stop

@@ -239,26 +239,26 @@ s3_test() {
   printf 'fawwk %s\n' "$(hostname)" >"$tmp/up"
   if ! s3_put "$tmp/up" "$name" >"$tmp/log" 2>&1; then
     err "Couldn't upload to $S3_BUCKET."
-    tail -n 5 "$tmp/log" | ui_quote
+    tail -n 5 "$tmp/log" | ui_quote --error
     hint "Check the bucket name, the endpoint and that the key may write objects (R2: Object Read & Write)."
     rm -rf "$tmp"; return 1
   fi
   if ! s3_ls '' 2>"$tmp/log" | grep -qxF -- "$name"; then
     err "Uploaded, but couldn't list the bucket (the key needs list access too)."
-    tail -n 5 "$tmp/log" | ui_quote
+    tail -n 5 "$tmp/log" | ui_quote --error
     s3_rm "$name" >/dev/null 2>&1 || true
     rm -rf "$tmp"; return 1
   fi
   back="$tmp/down"
   if ! s3_fetch "$name" "$back" >"$tmp/log" 2>&1 || ! cmp -s "$tmp/up" "$back"; then
     err "Uploaded, but couldn't read it back (the key needs read access too)."
-    tail -n 5 "$tmp/log" | ui_quote
+    tail -n 5 "$tmp/log" | ui_quote --error
     s3_rm "$name" >/dev/null 2>&1 || true
     rm -rf "$tmp"; return 1
   fi
   if ! s3_rm "$name" >"$tmp/log" 2>&1; then
     err "Couldn't delete the test file (the key needs delete access, or old backups can't be removed)."
-    tail -n 5 "$tmp/log" | ui_quote
+    tail -n 5 "$tmp/log" | ui_quote --error
     rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"

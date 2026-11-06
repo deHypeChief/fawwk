@@ -196,7 +196,7 @@ hooks_ensure() {
     # Missing, or created by an older Fawwk with weaker settings.
     spin_start "Starting the webhook receiver"
     local out
-    out=$(hooks_container_start) || { spin_stop; err "Couldn't start the webhook receiver:"; printf '%s\n' "$out" | tail -n 5 | ui_quote; die "Check Docker, then run this again."; }
+    out=$(hooks_container_start) || { spin_stop; err "Couldn't start the webhook receiver:"; printf '%s\n' "$out" | tail -n 5 | ui_quote --error; die "Check Docker, then run this again."; }
     spin_stop
   else
     hooks_dirs

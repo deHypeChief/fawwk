@@ -881,6 +881,18 @@ test_db_urls_links_and_retention() {
   db_unlink shop-db api 2>/dev/null
   hasnt "$(cat "$(app_envfile api)")" DATABASE_URL
   db_load shop-db; eq "$D_LINKS" ''
+  # A value added by hand: say it's replaced; a similar name: say how to link under it.
+  local out
+  printf 'MONGODB_URL=mongodb://old-host/x\nMONGODB_URI=mongodb+srv://atlas/x\nREDIS_URL=redis://old\n' >"$(app_envfile api)"
+  db_load docs
+  out=$(db_link_apply api MONGODB_URL 2>&1)
+  has "$out" 'api already has MONGODB_URL set. Linking replaces it'
+  has "$out" 'api also has MONGODB_URI'; has "$out" 'fawwk db link docs api --as MONGODB_URI'
+  hasnt "$out" REDIS_URL
+  has "$(cat "$(app_envfile api)")" 'MONGODB_URL=mongodb://docs:pw123@fawwk-db-docs:27017/docs?authSource=admin'
+  out=$(db_link_apply api MONGODB_URL 2>&1)   # same value again: nothing to warn about it
+  hasnt "$out" 'already has'
+  db_load shop-db
   # Retention: newest 7 scheduled / pre-restore kept, manual ones never pruned; "latest" skips safety copies.
   local d i
   d=$(db_backups shop-db); mkdir -p "$d"
@@ -1056,6 +1068,28 @@ EOF
   # Really missing: the usual warning.
   out=$(dns_report missing.example.com 2>&1)
   has "$out" "missing.example.com doesn't resolve yet"
+}
+
+test_ui_quote_error_logs() {
+  load_fawwk
+  C_RED='<R>' C_YELLOW='<Y>' C_MUTED='<M>' C_RESET='</>' G_V='|'
+  local out
+  out=$(printf '%s\n' 'starting' '' 'DNSException: getaddrinfo ESERVFAIL' '  code: 1' '' '' \
+    'DNSException: getaddrinfo ESERVFAIL' '  code: 1' '' 'DNSException: getaddrinfo ESERVFAIL' '  code: 1' \
+    '' 'Warning: punycode is deprecated' '    at <anonymous> (/app/x.js:1:2)' '187 |   const err = new Error()' |
+    ui_quote --error 2>&1)
+  eq "$out" "$(printf '%s\n' \
+    '     <R>|</> starting' \
+    '     <R>|</>' \
+    '     <R>|</> <R>DNSException: getaddrinfo ESERVFAIL</>' \
+    '     <R>|</>   code: 1' \
+    '     <R>|</> <M>(the same 2 more times)</>' \
+    '     <R>|</>' \
+    '     <R>|</> <Y>Warning: punycode is deprecated</>' \
+    '     <R>|</> <M>    at <anonymous> (/app/x.js:1:2)</>' \
+    '     <R>|</> <M>187 |   const err = new Error()</>')"
+  # Without --error: as before, no colouring of the text.
+  eq "$(printf 'Error: x\n' | ui_quote 2>&1)" "     ${C_BORDER}|</> Error: x"
 }
 
 test_ui_columns_layout() {
