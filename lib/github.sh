@@ -328,7 +328,7 @@ cmd_github() {
 }
 
 github_list() {
-  local src jwt n=0 inst repos
+  local src jwt n=0 inst repos=() names=() r
   while IFS= read -r src; do
     [[ -z $src ]] && continue
     n=$((n + 1))
@@ -343,10 +343,18 @@ github_list() {
     local id acct tok
     while read -r id acct; do
       tok=$(gh_api "$jwt" POST "/app/installations/$id/access_tokens" '{}' 2>/dev/null | jq -r '.token // empty') || true
-      repos=''
-      [[ -n $tok ]] && repos=$(gh_api "$tok" GET "/installation/repositories?per_page=100" 2>/dev/null |
-        jq -r '.repositories[].full_name' 2>/dev/null | tr '\n' ' ' || true)
-      ok "Installed on ${C_BOLD}$acct${C_RESET}: ${repos:-no repos selected}"
+      repos=() names=()
+      [[ -n $tok ]] && mapfile -t repos < <(gh_api "$tok" GET "/installation/repositories?per_page=100" 2>/dev/null |
+        jq -r '.repositories[].full_name' 2>/dev/null | sort -f || true)
+      if ((${#repos[@]} == 0)); then
+        ok "Installed on ${C_BOLD}$acct${C_RESET} ${C_MUTED}${G_SEP} no repos selected yet${C_RESET}"
+        continue
+      fi
+      ok "Installed on ${C_BOLD}$acct${C_RESET} ${C_MUTED}${G_SEP} ${#repos[@]} repo$( ((${#repos[@]} == 1)) || echo s)${C_RESET}"
+      # The account's own repos first, by name only; then others with their owner dimmed.
+      for r in "${repos[@]}"; do [[ $r == "$acct"/* ]] && names+=("${r#*/}"); done
+      for r in "${repos[@]}"; do [[ $r == "$acct"/* ]] || names+=("${C_MUTED}${r%%/*}/${C_RESET}${r#*/}"); done
+      ui_columns "${names[@]}"
     done < <(jq -r '.[] | "\(.id) \(.account.login)"' <<<"$inst")
     hint "Add or remove repos: $(gh_install_url "$src")"
   done < <(gh_sources)

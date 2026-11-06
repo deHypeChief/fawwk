@@ -1058,6 +1058,16 @@ EOF
   has "$out" "missing.example.com doesn't resolve yet"
 }
 
+test_ui_columns_layout() {
+  load_fawwk
+  ui_cols() { echo 40; }
+  # Top to bottom like ls, padded to the widest item + 3, as many columns as fit (40 cols: 3 of 10).
+  eq "$(ui_columns alpha beta gamma delta epsilon 2>&1)" "$(printf '    %s\n' 'alpha     gamma     epsilon' 'beta      delta')"
+  ui_cols() { echo 200; }
+  eq "$(ui_columns a b c d e f g 2>&1 | head -1)" '    a   c   e   g'   # never more than 4 columns
+  eq "$(ui_columns 2>&1)" ''
+}
+
 test_dns_proxied_origin_check() {
   load_fawwk
   SERVER_IP=203.0.113.7

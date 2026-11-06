@@ -122,6 +122,34 @@ ui_quote() {
   done
 }
 
+# ui_columns ITEM... — lists items in aligned columns (top to bottom, like ls), indented under the
+# text of the line above, as many columns as the terminal fits (at most 4).
+ui_columns() {
+  (($#)) || return 0
+  local items=("$@") n=$# w=0 i l lead per rows r c line pad
+  for i in "${items[@]}"; do l=$(ui_len "$i"); ((l > w)) && w=$l; done
+  ui_lead; lead="$UI_LEAD  "
+  per=$((($(ui_cols) - $(ui_len "$lead")) / (w + 3)))
+  ((per < 1)) && per=1
+  ((per > 4)) && per=4
+  rows=$(((n + per - 1) / per))
+  for ((r = 0; r < rows; r++)); do
+    line=$lead
+    for ((c = 0; c < per; c++)); do
+      i=$((c * rows + r))
+      ((i < n)) || break
+      line+=${items[i]}
+      # Pad to the column width unless this is the last item on the row.
+      if ((c + 1 < per && (c + 1) * rows + r < n)); then
+        pad=$((w + 3 - $(ui_len "${items[i]}")))
+        printf -v pad '%*s' "$pad" ''
+        line+=$pad
+      fi
+    done
+    printf '%s\n' "$line" >&2
+  done
+}
+
 # kv "Label" "value" — an aligned key/value line (used inside boxes and info screens).
 kv() { printf '%s%-14s%s %s' "$C_MUTED" "$1" "$C_RESET" "$2"; }
 
