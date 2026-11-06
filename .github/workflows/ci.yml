@@ -26,6 +26,9 @@ jobs:
             sudo tar -xz -C /usr/local/bin railpack
           railpack --version
 
+      - name: Install rclone (for the S3 backup test, run against its local backend)
+        run: sudo apt-get install -y -q rclone && rclone version | head -n1
+
       - name: Tests
         # Sandboxed (temp dirs, stub docker), but the commands under test check for root. The database
         # test uses the runner's real Docker: Postgres, Redis and MongoDB, created, backed up and restored.

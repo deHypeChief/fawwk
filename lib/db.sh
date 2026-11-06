@@ -285,7 +285,7 @@ db_timer_ensure() {
   fi
   cat >"$SYSTEMD_DIR/fawwk-db-backup.service" <<EOF
 [Unit]
-Description=Fawwk: back up managed databases
+Description=Fawwk: back up managed databases (and upload copies, with fawwk backup s3)
 After=docker.service
 Requires=docker.service
 
@@ -573,10 +573,14 @@ db_backup_cmd() {
       failed+=("$name")
     fi
   done
+  # Then copies to the bucket, when one is set up (fawwk backup s3), even if a backup above failed.
+  local offsite=0
+  ((scheduled)) && { s3_nightly || offsite=1; }
   if ((${#failed[@]})); then
     ((scheduled)) && notify failed "${failed[*]}" '' "$G_ERR Database backup failed on $(hostname): ${failed[*]}. Check: fawwk db"
     FAWWK_DIED=1; exit 1
   fi
+  ((offsite == 0)) || { FAWWK_DIED=1; exit 1; }
 }
 
 db_backups_list() {
@@ -679,5 +683,5 @@ db_remove() {
   fi
   rm -rf "$(db_dir "$name")"
   ok "Database $name removed"
-  [[ -n $(db_names) ]] || systemctl disable --now fawwk-db-backup.timer >/dev/null 2>&1 || true
+  [[ -n $(db_names) ]] || s3_enabled || systemctl disable --now fawwk-db-backup.timer >/dev/null 2>&1 || true
 }

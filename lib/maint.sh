@@ -37,12 +37,16 @@ With --with-data, app volumes and a fresh backup of every managed database (faww
 too. Database copies are consistent; for app volumes, stop busy apps first for a consistent copy.
 
 The file contains secrets. Keep it somewhere safe. Restore on a new server with: fawwk restore <file>
+
+Copies in S3, Cloudflare R2 and similar, uploaded each night with old ones deleted:
+  sudo fawwk backup s3 setup        (more: fawwk backup s3 --help)
 EOF
 }
 
 docker_volumes_dir() { printf '%s/volumes' "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"; }
 
 cmd_backup() {
+  [[ ${1-} == s3 ]] && { shift; cmd_backup_s3 "$@"; return; }
   local out='' data=0 a
   for a in "$@"; do
     case $a in

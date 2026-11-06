@@ -38,7 +38,7 @@ EOF
 # Loads fawwk's libraries into the current (sub)shell, like bin/fawwk does.
 load_fawwk() {
   local l
-  for l in ui common git github env build proxy release notify updates logs setup create manage settings db maint doctor; do
+  for l in ui common git github env build proxy release notify updates logs setup create manage settings db s3 maint doctor; do
     # shellcheck disable=SC1090
     source "$ROOT/lib/$l.sh"
   done
@@ -775,6 +775,92 @@ add_db() {
   mkdir -p "$FAWWK_ETC/dbs/$1"
   printf 'D_NAME=%s\nD_TYPE=%s\nD_VERSION=1\nD_IMAGE=img\nD_USER=%s\nD_PASSWORD=pw123\nD_DATABASE=%s\n' \
     "$1" "$2" "$([[ $2 == redis ]] && echo default || echo "${1//-/_}")" "${1//-/_}" >"$FAWWK_ETC/dbs/$1/db.conf"
+}
+
+# Backups to a bucket, with rclone's local backend standing in for S3 (same commands, a folder as the
+# bucket). Checks what gets uploaded, what gets deleted, and that the secret key is never an argument.
+test_s3_backups() {
+  command -v rclone >/dev/null || { echo "skipped (rclone not installed)"; return 0; }
+  load_fawwk
+  local real now old f
+  real=$(command -v rclone)
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/rclone.log"\nexec %s "$@"\n' "$SB" "$real" >"$SB/bin/rclone"
+  printf '#!/bin/sh\nexit 0\n' >"$SB/bin/systemctl"
+  chmod +x "$SB/bin/rclone" "$SB/bin/systemctl"
+  cd "$SB"
+  export S3_REMOTE_TYPE=local
+  add_db shop-db postgres
+  mkdir -p "$BACKUPS_DIR/shop-db"
+  now=$(date +%Y%m%d-%H%M%S)
+  old=$(date -d "@$(($(date +%s) - 40 * 86400))" +%Y%m%d-%H%M%S)
+  echo new >"$BACKUPS_DIR/shop-db/shop-db-$now-scheduled.dump"
+  echo old >"$BACKUPS_DIR/shop-db/shop-db-$old-manual.dump"
+  echo part >"$BACKUPS_DIR/shop-db/shop-db-$now-manual.dump.partial"
+  # Copies already in the bucket from a database that's gone: 5 old ones, and a file Fawwk didn't make.
+  local gone=$SB/bucket/fawwk/test/db/gone-db
+  mkdir -p "$gone"
+  for f in 20200101 20200102 20200103 20200104 20200105; do echo x >"$gone/gone-db-$f-031700-scheduled.dump"; done
+  echo mine >"$gone/notes.txt"
+
+  FAWWK_YES=1 FAWWK_S3_ACCESS_KEY_ID=AKIDTEST FAWWK_S3_SECRET_ACCESS_KEY=s3cr3t-key-value \
+    s3_cmd_setup --provider other --endpoint http://127.0.0.1:9 --bucket bucket --prefix fawwk/test --keep-days 30 >"$SB/out" 2>&1 ||
+    { cat "$SB/out"; return 1; }
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "$S3_BUCKET" bucket
+  eq "$(stat -c %a "$S3_KEYS")" 600
+  has "$(cat "$S3_KEYS")" s3cr3t-key-value
+  hasnt "$(cat "$FAWWK_CONF")" s3cr3t
+  hasnt "$(cat "$SB/rclone.log")" s3cr3t
+  hasnt "$(cat "$SB/rclone.log")" AKIDTEST
+  [[ -f $SB/systemd/fawwk-db-backup.timer ]]   # the nightly upload runs even without databases to back up
+
+  local up=$SB/bucket/fawwk/test
+  [[ -f $up/db/shop-db/shop-db-$now-scheduled.dump ]]
+  [[ ! -e $up/db/shop-db/shop-db-$old-manual.dump ]]          # older than kept: not uploaded
+  [[ ! -e $up/db/shop-db/shop-db-$now-manual.dump.partial ]]  # unfinished: not uploaded
+  ls "$up/server/"settings-*.tar.gz >/dev/null
+  tar -tzf "$up"/server/settings-*.tar.gz | grep -q 'etc/fawwk.conf$'
+  # Old copies go, but the newest 3 of each database stay, and unknown files are left alone.
+  eq "$(cd "$gone" && ls | sort | tr '\n' ' ')" \
+    "gone-db-20200103-031700-scheduled.dump gone-db-20200104-031700-scheduled.dump gone-db-20200105-031700-scheduled.dump notes.txt "
+  ls "$up"/.fawwk-test-* >/dev/null 2>&1 && return 1           # the setup test file was removed
+
+  # A second push uploads nothing new (settings aside).
+  s3_push
+  has "$S3_PUSH_SUMMARY" "1 uploaded"
+  s3_status_load
+  [[ -n $S3_LAST_OK && -z $S3_LAST_ERROR ]]
+  has "$(doctor_s3 2>&1)" "Uploaded to bucket"
+
+  # min 1 and keep everything: nothing is deleted with 0 days.
+  s3_cmd_keep 0 >/dev/null 2>&1
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "$(s3_prune db/gone-db)" 0
+  s3_cmd_keep 30 --min 1 >/dev/null 2>&1
+  # shellcheck disable=SC1090
+  source "$FAWWK_CONF"
+  eq "$(s3_prune db/gone-db)" 2
+  [[ -f $gone/gone-db-20200105-031700-scheduled.dump && -f $gone/notes.txt ]]
+
+  # Download the newest copy back.
+  rm -f "$BACKUPS_DIR/shop-db/shop-db-$now-scheduled.dump"
+  s3_cmd_get shop-db latest >/dev/null 2>&1
+  eq "$(cat "$BACKUPS_DIR/shop-db/shop-db-$now-scheduled.dump")" new
+  has "$(s3_cmd_list shop-db 2>&1)" "shop-db-$now-scheduled.dump"
+
+  # The nightly run uploads even when a database backup fails (here: the stub has no running container).
+  echo newer >"$BACKUPS_DIR/shop-db/shop-db-$(date -d '@'$(($(date +%s) + 60)) +%Y%m%d-%H%M%S)-manual.dump"
+  (db_backup_cmd --all --scheduled >/dev/null 2>&1) && return 1
+  eq "$(ls "$up/db/shop-db" | wc -l)" 2
+  # A broken bucket is reported and remembered for doctor.
+  S3_REMOTE_TYPE=no-such-backend
+  s3_push >/dev/null 2>&1 && return 1
+  S3_REMOTE_TYPE=local
+  s3_status_load
+  has "$S3_LAST_ERROR" "Couldn't upload"
+  return 0
 }
 
 test_db_urls_links_and_retention() {
