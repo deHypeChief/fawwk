@@ -42,15 +42,20 @@ git push              # redeploys in seconds (GitHub connected), or within a min
 
 ## Install
 
-On a fresh Ubuntu 22.04/24.04 server. 2 GB of RAM is enough for a few small apps; with databases and
-several apps building on one server, use 4 GB or more (builds are the hungriest part).
+On a fresh Ubuntu 22.04/24.04 server. Ubuntu 25.10 and newer replace sudo and the core commands with
+new Rust versions, and Fawwk isn't tested on those yet. 2 GB of RAM is enough for a few small apps;
+with databases and several apps building on one server, use 4 GB or more (builds are the hungriest part).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/deHypeChief/fawwk/main/install.sh | sudo bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/deHypeChief/fawwk/main/install.sh | sudo bash
 ```
 
-This clones Fawwk to `/opt/fawwk`, links the `fawwk` command, and starts `setup`. Leave off
-`-s -- --setup` to install without running setup. Update later with `sudo fawwk update`.
+```bash
+sudo fawwk setup
+```
+
+The first clones Fawwk to `/opt/fawwk` and links the `fawwk` command; the second prepares the server.
+Update later with `sudo fawwk update`.
 
 `setup` asks for:
 
