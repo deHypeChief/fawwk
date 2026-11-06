@@ -5,7 +5,7 @@
 # ${m//\"/&quot;} gives "quot; instead of &quot;. Fawwk is written for the old rule: a literal &.
 shopt -u patsub_replacement 2>/dev/null || true
 
-FAWWK_VERSION="0.4.1"
+FAWWK_VERSION="0.5.0"
 
 # ---------- paths (overridable for testing) ----------
 FAWWK_ETC="${FAWWK_ETC:-/etc/fawwk}"          # config + secrets (root only)

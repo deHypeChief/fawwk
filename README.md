@@ -228,6 +228,41 @@ fawwk db remove shop                               # see "Deleting a database" b
 - `restore` replaces the database's contents with the backup's, exactly: data added after the backup is
   gone. A safety backup of the current data is taken first. Apps are disconnected for a moment.
 - Redis runs with its append-only file on, so a restart loses nothing.
+- Deploys, restarts, rollbacks, `cleanup` and `fawwk update` never touch databases or their volumes.
+  Databases restart by themselves after a crash or a reboot (unless you stopped one with `fawwk db stop`).
+- Backups are on the same server as the database. Keep copies elsewhere with `fawwk backup s3` (next).
+
+#### Copies in S3, R2 and similar
+
+```bash
+sudo fawwk backup s3 setup          # Cloudflare R2, Amazon S3, Backblaze B2, Wasabi, MinIO...
+fawwk backup s3                     # what's set up and the last upload
+fawwk backup s3 push                # upload now (also runs each night after the backups)
+fawwk backup s3 list                # what's in the bucket
+fawwk backup s3 get shop            # download the newest copy of a database, then: fawwk db restore
+fawwk backup s3 keep 30 --min 3     # delete copies older than 30 days, always keeping the newest 3
+```
+
+- `setup` asks where (R2 needs the account ID, other services their endpoint URL), the bucket, a folder
+  for this server (default `fawwk/<hostname>`), an access key and how long to keep copies (default 30
+  days). It uploads, lists, reads and deletes a test file before saving anything. Create the bucket
+  first and keep it private; for R2, an API token with Object Read & Write on that bucket is enough.
+- Each night, after the database backups, every backup the bucket doesn't have yet is uploaded, plus a
+  copy of the server's settings (`fawwk backup`: apps, env vars, keys, so a new server can be rebuilt
+  from the bucket; it contains secrets, `fawwk backup s3 settings off` to leave it out).
+- Then copies older than the limit are deleted, so the bucket doesn't keep growing. The newest 3 of
+  each database always stay, even when they're older: if backups stop working for a while, the last
+  good ones are still there. Files Fawwk didn't put there are never deleted.
+- A failed upload sends a notification, and `doctor` warns when the last upload is over two days old.
+- Uploads go through rclone (installed when needed). The keys are kept in `/etc/fawwk/s3.env`, readable
+  by root only, and never appear on a command line.
+- Without prompts: `FAWWK_S3_ACCESS_KEY_ID=... FAWWK_S3_SECRET_ACCESS_KEY=... fawwk backup s3 setup
+  --provider r2 --account-id ID --bucket NAME --yes` (also `--endpoint`, `--region`, `--prefix`,
+  `--keep-days`).
+
+Losing the server: on a new one, install Fawwk, run `fawwk setup`, then `fawwk backup s3 setup` with the
+same bucket and folder. `fawwk backup s3 get server` downloads the settings for `fawwk restore`, and
+`fawwk backup s3 get <database>` each database for `fawwk db restore` (after `fawwk db create`).
 
 #### Deleting a database
 
@@ -322,6 +357,7 @@ the chat yourself: `fawwk notify telegram <token> <chat-id>`.
 fawwk cleanup                       # old images and build logs, untagged layers, build cache
 fawwk backup [file] [--with-data]   # settings, apps, env vars, keys, GitHub connections, certificates
                                     # (--with-data: app volumes and a fresh backup of every database)
+fawwk backup s3 setup               # copies of the backups in S3 / R2 each night (see Databases)
 fawwk restore backup.tar.gz         # on a new server, then: fawwk setup --yes && fawwk deploy --all
 fawwk update                        # update Fawwk (also refreshes timers, log rotation, webhooks)
 fawwk update --check                # just check whether a new version is out

@@ -82,6 +82,7 @@ cmd_doctor() {
     done < <(db_names)
     [[ ${DB_BACKUP_AT:-03:17} == off ]] && warn "Daily database backups are off: fawwk db schedule 03:17"
   fi
+  doctor_s3
 
   step "Apps"
   local n=0 state
@@ -111,4 +112,25 @@ cmd_doctor() {
   if ((problems)); then err "$problems problem(s) found"; FAWWK_DIED=1; exit 1; fi
   if ((UI_WARNINGS)); then warn "No problems, but $UI_WARNINGS warning(s) above"
   else ok "Everything looks good"; fi
+}
+
+# Copies of the backups in a bucket (fawwk backup s3).
+doctor_s3() {
+  if ! s3_enabled; then
+    [[ -n $(db_names) ]] && info "Backups are only on this server. Keep copies in S3 / R2: fawwk backup s3 setup"
+    return 0
+  fi
+  step "Backups in $(s3_provider_label "$S3_PROVIDER")"
+  command -v rclone >/dev/null 2>&1 || { warn "rclone is missing, so nothing is uploaded: apt-get install rclone"; return 0; }
+  s3_status_load
+  if [[ -n $S3_LAST_ERROR ]]; then
+    warn "Last upload failed ($(s3_ago "${S3_LAST_ERROR_AT:-0}")): $S3_LAST_ERROR. Check: fawwk backup s3 test"
+  fi
+  if [[ -z $S3_LAST_OK ]]; then
+    warn "Nothing uploaded to $S3_BUCKET yet. Now: fawwk backup s3 push"
+  elif (($(date +%s) - S3_LAST_OK > 48 * 3600)); then
+    warn "The last upload to $S3_BUCKET was $(s3_ago "$S3_LAST_OK"). Check: fawwk backup s3 test"
+  else
+    ok "Uploaded to $S3_BUCKET $(s3_ago "$S3_LAST_OK") ($S3_LAST_SUMMARY)"
+  fi
 }

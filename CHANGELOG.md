@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0
+
+### Upgrading
+
+```bash
+sudo fawwk update
+```
+
+### New
+
+- **Backups in S3, Cloudflare R2 and similar:** `sudo fawwk backup s3 setup` connects a bucket (R2,
+  Amazon S3, Backblaze B2, Wasabi, MinIO...) and tests it before saving. Each night after the database
+  backups, the ones the bucket doesn't have yet go up, with a copy of the server's settings, so the server
+  can be rebuilt from the bucket alone. Copies older than 30 days (`fawwk backup s3 keep <days>`) are
+  then deleted, keeping the newest 3 of each database even when they're older. Also `push`, `list`,
+  `get` (download for `fawwk db restore` / `fawwk restore`), `test` and `off`. A failed upload sends a
+  notification, and `doctor` checks the last upload. Keys live in `/etc/fawwk/s3.env` (root only).
+- `doctor` mentions it when databases are only backed up on the server itself.
+
+### Fixed
+
+- The one-line install (`curl ... | sudo bash -s -- --setup`) could hang with no output on some
+  servers (seen on Ubuntu 25.10). Piped, it now installs and says to run `sudo fawwk setup`.
+
 ## 0.4.1
 
 ### Upgrading
