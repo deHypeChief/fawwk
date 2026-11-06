@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Installs Fawwk to /opt/fawwk and puts `fawwk` on the PATH.
 #
-#   One line, straight from GitHub:
-#     curl -fsSL https://raw.githubusercontent.com/deHypeChief/fawwk/main/install.sh | sudo bash -s -- --setup
+#   Straight from GitHub, then set up:
+#     curl -fsSL https://raw.githubusercontent.com/deHypeChief/fawwk/main/install.sh | sudo bash
+#     sudo fawwk setup
 #   From a copy of this repo on the server:
 #     sudo ./install.sh --setup
 #
-# --setup runs `fawwk setup` right after installing.
+# --setup runs `fawwk setup` right after installing, when this script isn't piped in. Piped, the
+# script itself is on stdin, so setup's questions would have to borrow the terminal through
+# /dev/tty from behind sudo, which hangs with no output on some servers. It says what to run instead.
 set -Eeuo pipefail
 
 PREFIX=${FAWWK_PREFIX:-/opt/fawwk}
@@ -62,12 +65,17 @@ chmod 755 "$PREFIX/lib/askpass.sh"
 ln -sf "$PREFIX/bin/fawwk" /usr/local/bin/fawwk
 
 echo "Fawwk $("$PREFIX/bin/fawwk" version) installed: $(command -v fawwk)"
+WILL_SETUP=0
+if ((RUN_SETUP)) && [[ -t 0 ]]; then WILL_SETUP=1; fi
 # Already set up (re-install over an existing server): refresh timers, log rotation, webhook receiver.
-[[ -f /etc/fawwk/fawwk.conf ]] && ((RUN_SETUP == 0)) && "$PREFIX/bin/fawwk" post-update installed || true
-if ((RUN_SETUP)); then
-  # When piped from curl, stdin is the script itself; answer setup's questions from the terminal.
-  if [[ ! -t 0 && -r /dev/tty ]]; then exec fawwk setup </dev/tty; fi
+if [[ -f /etc/fawwk/fawwk.conf ]] && ((WILL_SETUP == 0)); then "$PREFIX/bin/fawwk" post-update installed || true; fi
+if ((WILL_SETUP)); then
   exec fawwk setup
+elif [[ -f /etc/fawwk/fawwk.conf ]]; then
+  echo "This server is already set up. Change its settings any time with: sudo fawwk setup"
+elif ((RUN_SETUP)); then
+  echo "Next, run setup on its own (it asks a few questions, which can't be answered through a pipe):"
+  echo "  sudo fawwk setup"
 else
   echo "Next: sudo fawwk setup"
 fi
