@@ -5,7 +5,7 @@ set -Eeuo pipefail
 FAWWK_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export FAWWK_HOME
 
-for _lib in ui common git github env build proxy release notify updates logs setup create manage settings db maint doctor; do
+for _lib in ui common git github env build proxy release notify updates logs setup create manage settings db s3 maint doctor; do
   # shellcheck disable=SC1090
   source "$FAWWK_HOME/lib/$_lib.sh"
 done
@@ -44,6 +44,7 @@ usage() {
     c "notify [url [--all]|test|off]" "Get told when an automated deploy fails"
     c "cleanup" "Free disk space (keeps rollback images)"
     c "backup [file] [--with-data]" "Save settings, apps, secrets, certificates"
+    c "backup s3 [setup|push|list|get|keep]" "Copies in S3 / R2, old ones deleted"
     c "restore <file>" "Rebuild a backup on this server"
     c "update [--check]" "Update Fawwk itself (or just check)"
     c "uninstall" "Remove Fawwk and its apps"

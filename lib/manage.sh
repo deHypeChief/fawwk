@@ -708,7 +708,8 @@ cmd_post_update() {
   require_setup
   setup_logrotate >/dev/null 2>&1 || true
   railpack_migrate
-  [[ -n $(db_names) ]] && db_timer_ensure
+  if [[ -n $(db_names) ]] || s3_enabled; then db_timer_ensure; fi
+  if s3_enabled; then s3_install_rclone >/dev/null 2>&1 || warn "Couldn't install rclone, which uploads backups to $S3_BUCKET: apt-get install rclone"; fi
   setup_railpack >/dev/null 2>&1 || warn "Couldn't install Railpack $RAILPACK_VERSION. Try: sudo fawwk setup"
   if hooks_enabled; then
     # The webhook receiver runs code from this checkout; recreate or restart it to pick up changes.
