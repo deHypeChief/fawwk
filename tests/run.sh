@@ -1335,6 +1335,40 @@ EOF
   eq "$(update_release_url 0.4.0)" https://github.com/deHypeChief/fawwk/releases/tag/v0.4.0
 }
 
+test_proxy_logs_styling() {
+  load_fawwk
+  command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; return 0; }
+  local out
+  out=$(printf '%s\n' \
+    '{"level":"info","ts":1793940629.21,"msg":"maxprocs: Leaving GOMAXPROCS=6: CPU quota undefined"}' \
+    '{"level":"warn","ts":1793940629.21,"msg":"No files matching import glob pattern","pattern":"/etc/caddy/custom/*.caddy"}' \
+    '{"level":"info","ts":1793940629.21,"msg":"serving initial configuration"}' \
+    '{"level":"info","ts":1793971916.67,"logger":"admin.api","msg":"received request","method":"POST"}' \
+    '{"level":"warn","ts":1793971916.67,"logger":"http.auto_https","msg":"server is listening only on the HTTP port, so no automatic HTTPS will be applied to this server"}' \
+    '{"level":"warn","ts":1793971916.67,"logger":"http","msg":"HTTP/2 skipped because it requires TLS","addr":":80"}' \
+    '{"level":"info","ts":1793971916.67,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["panel.vaserahq.com","api.vaserahq.com"]}' \
+    '{"level":"info","ts":1793971916.67,"logger":"admin.api","msg":"load complete"}' \
+    '{"level":"info","ts":1793971916.68,"logger":"tls.obtain","msg":"obtaining certificate","identifier":"api.vaserahq.com"}' \
+    '{"level":"info","ts":1793971917.54,"msg":"trying to solve challenge","identifier":"api.vaserahq.com","challenge_type":"http-01"}' \
+    '{"level":"info","ts":1793971929.15,"logger":"tls.issuance.acme","msg":"served key authentication","identifier":"api.vaserahq.com"}' \
+    '{"level":"info","ts":1793971933.07,"logger":"tls.obtain","msg":"certificate obtained successfully","identifier":"api.vaserahq.com"}' \
+    '{"level":"error","ts":1793971999.00,"logger":"tls.obtain","msg":"could not get certificate from issuer","identifier":"x.vaserahq.com","error":"HTTP 429 rateLimited"}' \
+    'plain text line' | TZ=UTC logs_pretty proxy)
+  has "$out" "$G_H$G_H Fri  6 Nov $G_H$G_H"
+  has "$out" '  04:50:29  INF  Proxy started'
+  has "$out" '  13:31:56  INF  HTTPS managed for api.vaserahq.com, panel.vaserahq.com'
+  has "$out" '  13:31:56  INF  Config reloaded'
+  has "$out" '  13:31:56  INF  Requesting an HTTPS certificate for api.vaserahq.com'
+  has "$out" "  13:31:57  INF  Let's Encrypt is checking api.vaserahq.com"
+  has "$out" '  13:32:13  OK   Certificate issued for api.vaserahq.com'
+  has "$out" $'  13:33:19  ERR  could not get certificate from issuer  x.vaserahq.com\n                 ↳ HTTP 429 rateLimited'
+  has "$out" '                 plain text line'
+  local noise
+  for noise in maxprocs 'import glob' 'received request' 'only on the HTTP port' 'HTTP/2 skipped' 'served key'; do
+    hasnt "$out" "$noise"
+  done
+}
+
 test_logs_styling() {
   load_fawwk
   local out

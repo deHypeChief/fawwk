@@ -96,11 +96,76 @@ elif test("^\\s*$") then empty
 else "    " + . end
 JQ
 
-# logs_pretty app|build — styles stdin (needs jq; otherwise passes it through).
+# Input: Caddy's JSON log lines. Routine housekeeping (reloads' plumbing, lock and rate-limiter
+# chatter, warnings that are expected with Fawwk's config) is left out; certificate events are said
+# in plain words; errors keep Caddy's own error text on the line below.
+read -r -d '' LOGS_JQ_PROXY <<'JQ' || true
+def c($k): $s[$k];
+def noise: [
+  "^maxprocs:", "^GOMEMLIMIT is updated", "^using config from file", "^adapted config to JSON",
+  "^No files matching import glob pattern", "^Caddyfile input is not formatted", "^received request",
+  "^admin endpoint started", "^autosaved config", "^stopped previous server", "^config is unchanged",
+  "^servers shutting down", "^server running", "^enabling HTTP/3 listener", "^HTTP/[23] skipped",
+  "^server is listening only on the HTTP port", "^server is listening only on the HTTPS port",
+  "^enabling automatic HTTP->HTTPS redirects", "^started background certificate maintenance",
+  "cleaning storage unit", "^got renewal info", "waiting on internal rate limiter", "^acquiring lock",
+  "^lock acquired", "^releasing lock", "^using ACME account", "^creating new account because",
+  "^ACME account has empty status", "^served key authentication", "^authorization finalized",
+  "^validations succeeded", "^successfully downloaded available certificate chains"];
+def names($j): ([$j.identifier] + ($j.identifiers // []) + ($j.domains // []) + ($j.names // [])
+  | map(select(type == "string")) | unique | join(", "));
+def badge:
+  if . == "ERR" then c("red") + c("bold") + "ERR" + c("reset")
+  elif . == "WRN" then c("yellow") + "WRN" + c("reset")
+  elif . == "OK" then c("green") + "OK " + c("reset")
+  elif . == "DBG" then c("muted") + "DBG" + c("reset")
+  else c("muted") + "INF" + c("reset") end;
+def tint($l):
+  if $l == "ERR" then c("red") + . + c("reset") elif $l == "WRN" then c("yellow") + . + c("reset")
+  elif $l == "OK" then c("green") + . + c("reset") else . end;
+# {l: level, t: text, x: detail} or null to leave the line out.
+def pretty($j; $lvl):
+  ($j.msg // "" | tostring) as $m | names($j) as $n
+  | if $lvl != "ERR" and ($m as $mm | any(noise[]; . as $re | $mm | test($re))) then null
+    elif $m == "obtaining certificate" then {l: "INF", t: "Requesting an HTTPS certificate for \($n)"}
+    elif $m == "trying to solve challenge" then {l: "INF", t: "Let's Encrypt is checking \($n)"}
+    elif $m == "certificate obtained successfully" then {l: "OK", t: "Certificate issued for \($n)"}
+    elif $m == "certificate renewed successfully" then {l: "OK", t: "Certificate renewed for \($n)"}
+    elif $m == "enabling automatic TLS certificate management" then {l: "INF", t: "HTTPS managed for \($n)"}
+    elif $m == "load complete" then {l: "INF", t: "Config reloaded"}
+    elif $m == "serving initial configuration" then {l: "INF", t: "Proxy started"}
+    elif $m == "new ACME account registered" then
+      {l: "INF", t: "Registered with Let's Encrypt as \($j.contact // [] | map(sub("^mailto:"; "")) | join(", "))"}
+    else {l: $lvl, t: ($m + (if $n != "" then "  " + c("muted") + $n + c("reset") else "" end))} end
+  | if . != null and ($j.error // "") != "" then .x = ($j.error | tostring) else . end;
+foreach inputs as $line ({day: null};
+  (try ($line | fromjson) catch null) as $j
+  | if ($j | type) != "object" then
+      .out = (if ($line | test("^\\s*$")) then null else "                 " + $line end)
+    else
+      ($j.level // "info" | tostring | ascii_downcase
+        | if test("^(error|fatal|panic)") then "ERR" elif test("^warn") then "WRN" elif test("^debug") then "DBG" else "INF" end) as $lvl
+      | pretty($j; $lvl) as $p
+      | if $p == null then .out = null
+        else
+          ($j.ts | if type == "number" then floor else null end) as $t
+          | (if $t then ($t | localtime | strftime("%a %e %b")) else .day end) as $day
+          | .sep = (if $t and $day != .day then "  " + c("muted") + c("h") + c("h") + " " + $day + " " + c("h") + c("h") + c("reset") + "\n" else "" end)
+          | .day = $day
+          | .out = .sep + "  " + c("muted") + (if $t then ($t | localtime | strftime("%H:%M:%S")) else "        " end) + c("reset")
+              + "  " + ($p.l | badge) + "  " + ($p.t | tint($p.l))
+              + (if $p.x then "\n                 " + c("red") + "↳ " + $p.x + c("reset") else "" end)
+        end
+    end;
+  .out) | select(. != null)
+JQ
+
+# logs_pretty app|build|proxy — styles stdin (needs jq; otherwise passes it through).
 logs_pretty() {
   command -v jq >/dev/null 2>&1 || { cat; return; }
   local prog=$LOGS_JQ_APP
   [[ $1 == build ]] && prog=$LOGS_JQ_BUILD
+  [[ $1 == proxy ]] && prog=$LOGS_JQ_PROXY
   jq -nrR --unbuffered --argjson s "$(logs_style_json)" "$prog"
 }
 

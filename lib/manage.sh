@@ -601,11 +601,34 @@ cmd_remove() {
 }
 
 # ---------- proxy ----------
+# fawwk proxy logs [N] [-n N] [--no-follow] [--raw] — Caddy's log, styled (follows by default).
+proxy_logs() {
+  local tail=100 follow=(-f) raw=0
+  while (($#)); do
+    case $1 in
+      -n | --tail) need_arg "$@"; tail=$2; shift 2 ;;
+      -f | --follow) follow=(-f); shift ;;
+      --no-follow) follow=(); shift ;;
+      --raw) raw=1; shift ;;
+      -h | --help) echo "Usage: sudo fawwk proxy logs [N] [--no-follow] [--raw]   (--raw: Caddy's JSON, every line)"; return 0 ;;
+      *) [[ $1 =~ ^[0-9]+$ ]] || die "Unknown option: $1"; tail=$1; shift ;;
+    esac
+  done
+  if logs_styled "$raw"; then
+    printf '
+%s%s%s %sproxy%s logs  %s%s %s %s%s
+' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "$C_RESET"       "$C_MUTED" "$FAWWK_PROXY" "$G_SEP"       "$([[ ${#follow[@]} -gt 0 ]] && echo 'following, ctrl+c stops' || echo "last $tail lines")$( ((raw)) || echo " $G_SEP routine lines hidden (--raw shows all)")" "$C_RESET"
+    docker logs --tail "$tail" "${follow[@]}" "$FAWWK_PROXY" 2>&1 | logs_pretty proxy
+  else
+    docker logs --tail "$tail" "${follow[@]}" "$FAWWK_PROXY"
+  fi
+}
+
 cmd_proxy() {
   require_root proxy; require_setup
   case ${1:-status} in
     reload) proxy_reload && ok "Proxy config regenerated and reloaded" ;;
-    logs) docker logs --tail "${2:-100}" -f "$FAWWK_PROXY" ;;
+    logs) shift; proxy_logs "$@" ;;
     config) cat "$CADDY_DIR/Caddyfile" ;;
     upgrade)
       info "Proxy image: $(proxy_image) $G_ARROW $CADDY_IMAGE ${C_MUTED}(sites pause for a few seconds)${C_RESET}"
