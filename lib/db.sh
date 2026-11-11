@@ -7,7 +7,8 @@
 #   /var/lib/fawwk/backups/<name>/     backups: <name>-<date>-<kind>.<ext>, kind = scheduled|manual|pre-restore
 #
 # Databases have no published ports: only containers on the fawwk network (your apps) can reach them,
-# as fawwk-db-<name>. Use `fawwk db shell <name>` to get a prompt.
+# as fawwk-db-<name>. Use `fawwk db shell <name>` to get a prompt, or `fawwk db tunnel <name>` for an
+# SSH tunnel from your own computer.
 
 DBS_ETC="$FAWWK_ETC/dbs"
 BACKUPS_DIR="$FAWWK_VAR/backups"
@@ -72,10 +73,9 @@ db_default_var() { case $1 in postgres) echo DATABASE_URL ;; redis) echo REDIS_U
 db_backup_ext() { case $1 in postgres) echo dump ;; redis) echo rdb ;; mongodb) echo archive.gz ;; esac; }
 db_label() { case $1 in postgres) echo PostgreSQL ;; redis) echo Redis ;; mongodb) echo MongoDB ;; esac; }
 
-# The connection URL apps use (inside the fawwk network).
+# db_url [HOST PORT] — the connection URL apps use (inside the fawwk network), or one for HOST:PORT.
 db_url() {
-  local host port
-  host=$(db_container "$D_NAME") port=$(db_port "$D_TYPE")
+  local host=${1:-$(db_container "$D_NAME")} port=${2:-$(db_port "$D_TYPE")}
   case $D_TYPE in
     postgres) printf 'postgresql://%s:%s@%s:%s/%s' "$D_USER" "$D_PASSWORD" "$host" "$port" "$D_DATABASE" ;;
     redis) printf 'redis://default:%s@%s:%s/0' "$D_PASSWORD" "$host" "$port" ;;
@@ -83,7 +83,13 @@ db_url() {
   esac
 }
 
-db_url_masked() { local u; u=$(db_url); printf '%s' "${u/$D_PASSWORD/****}"; }
+db_url_masked() { local u; u=$(db_url "$@"); printf '%s' "${u/$D_PASSWORD/****}"; }
+
+# The loaded database's address on the fawwk network (empty when it isn't running).
+db_ip() {
+  docker inspect -f "{{with index .NetworkSettings.Networks \"$FAWWK_NETWORK\"}}{{.IPAddress}}{{end}}" \
+    "$(db_container "$D_NAME")" 2>/dev/null || true
+}
 
 # Starts (creating if needed) the database container from its settings.
 db_run() {
@@ -340,7 +346,10 @@ Usage: sudo fawwk db [command]
   link <name> <app> [--as VAR]      Set the URL as an env var of an app
   unlink <name> <app>               Remove it again
   shell <name>                      psql, redis-cli or mongosh inside the database
-  backup <name> | --all             Back up now (kept until you delete it)
+  tunnel <name> [--port N] [--reveal]
+                                    Reach it from your computer (Compass, TablePlus...)
+                                    through an SSH tunnel; prints the commands
+  backup <name> | --all            Back up now (kept until you delete it)
   backups <name>                    List backups
   restore <name> <file|latest>      Replace the data with a backup (a safety backup is taken first)
   schedule [HH:MM | off]            Daily backup time (default 03:17); keeps the last 7 (DB_KEEP_BACKUPS)
@@ -349,6 +358,7 @@ Usage: sudo fawwk db [command]
   remove <name> [--yes] [--keep-data]
 
 Databases are only reachable by your apps (as fawwk-db-<name>), never from the internet.
+To look inside one from your computer, use `fawwk db tunnel <name>`: it goes through SSH.
 EOF
 }
 
@@ -365,7 +375,8 @@ cmd_db() {
     link) db_link "$@" ;;
     unlink) db_unlink "$@" ;;
     shell | psql | cli) db_shell "$@" ;;
-    backup) db_backup_cmd "$@" ;;
+    tunnel | connect) db_tunnel "$@" ;;
+    backup)db_backup_cmd "$@" ;;
     backups) db_backups_list "$@" ;;
     restore) db_restore_cmd "$@" ;;
     schedule) db_schedule "$@" ;;
@@ -567,6 +578,44 @@ db_shell() {
     redis) db_exec "${tty[@]}" "$c" redis-cli ;;
     mongodb) db_exec "${tty[@]}" "$c" mongosh --quiet -u "$D_USER" -p "$D_PASSWORD" --authenticationDatabase admin "$D_DATABASE" ;;
   esac
+}
+
+# How to reach the database from your own computer: an SSH port forward to its address on the fawwk
+# network, which the server itself can reach. Nothing is opened on the server; the tunnel lives as
+# long as the ssh command on your computer.
+db_tunnel() {
+  local name='' port='' reveal=0 ip host user url client
+  while (($#)); do
+    case $1 in
+      --port) need_arg "$@"; port=$2; shift 2 ;;
+      --reveal) reveal=1; shift ;;
+      -*) die "Unknown option: $1 (see: fawwk db --help)" ;;
+      *) [[ -z $name ]] && name=$1 || die "Unexpected argument: $1"; shift ;;
+    esac
+  done
+  db_require "$name"
+  [[ -z $port || ($port =~ ^[0-9]+$ && $port -ge 1 && $port -le 65535) ]] || die "--port must be a port number, e.g. 27018"
+  port=${port:-$(($(db_port "$D_TYPE") + 1))}   # one up, so it doesn't clash with a local server
+  [[ $(db_state) == running ]] || die "$D_NAME isn't running. Start it: fawwk db start $D_NAME"
+  ip=$(db_ip)
+  [[ -n $ip ]] || die "Couldn't find $D_NAME's address on the $FAWWK_NETWORK network. Try: fawwk db restart $D_NAME"
+  host=$(server_ip) user=${SUDO_USER:-root}
+  [[ $user == root ]] && user='<you>'
+  if ((reveal)); then url=$(db_url localhost "$port"); else url=$(db_url_masked localhost "$port"); fi
+  [[ $D_TYPE == mongodb ]] && url+='&directConnection=true'
+  case $D_TYPE in postgres) client='TablePlus, DBeaver, pgAdmin or psql' ;; redis) client='RedisInsight or redis-cli' ;;
+    mongodb) client='MongoDB Compass or mongosh' ;; esac
+
+  printf '\n%s%s%s Tunnel to %s%s%s %s(%s %s)%s\n\n' "$C_ACCENT" "$G_STEP" "$C_RESET" "$C_BOLD" "$D_NAME" "$C_RESET" \
+    "$C_MUTED" "$(db_label "$D_TYPE")" "$D_VERSION" "$C_RESET"
+  printf '  1. On your computer, open the tunnel and leave that window open:\n\n'
+  printf '       %sssh -N -L %s:%s:%s %s@%s%s\n\n' "$C_BOLD" "$port" "$ip" "$(db_port "$D_TYPE")" "$user" "${host:-<server>}" "$C_RESET"
+  printf '     It prints nothing while it works.\n\n'
+  printf '  2. Point %s at:\n\n' "$client"
+  printf '       %s%s%s\n' "$C_BOLD" "$url" "$C_RESET"
+  ((reveal)) || printf '       %s(--reveal shows the password)%s\n' "$C_MUTED" "$C_RESET"
+  printf '\n  3. Done? Press Ctrl+C in the tunnel window (or close it). Nothing stays open on the server.\n\n'
+  hint "The address changes when $D_NAME restarts: run this again if the tunnel stops connecting. Changes you make there are live; take a backup first: fawwk db backup $D_NAME"
 }
 
 db_backup_cmd() {

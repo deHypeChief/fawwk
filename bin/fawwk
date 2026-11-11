@@ -80,6 +80,7 @@ usage() {
     h "Databases"
     c "db create <name> --type T [--link APP]" "Postgres, Redis or MongoDB, backed up daily"
     c "db [list|info|link|shell|backup|restore]" "Manage them (fawwk db --help)"
+    c "db tunnel <name>" "Open one from your computer over SSH"
 
     h "Data and jobs"
     c "volume <app> [list|add|rm] [path]" "Folders kept across deploys"

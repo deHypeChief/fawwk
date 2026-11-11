@@ -203,6 +203,7 @@ fawwk db url shop                                  # print the connection URL (f
 fawwk db link shop worker                          # give another app the URL (DATABASE_URL)
 fawwk db unlink shop worker                        # take it away again
 fawwk db shell shop                                # psql / redis-cli / mongosh
+fawwk db tunnel shop                               # open it from your computer (Compass, TablePlus...)
 fawwk db backup shop                               # back up now
 fawwk db backups shop                              # list its backups
 fawwk db restore shop latest                       # or a file from: fawwk db backups shop
@@ -217,6 +218,11 @@ fawwk db remove shop                               # see "Deleting a database" b
   can reach it.
 - `--link` (or `fawwk db link`) sets the connection URL on an app: `DATABASE_URL` for Postgres,
   `REDIS_URL` for Redis, `MONGODB_URL` for MongoDB (`--as NAME` to pick another), then offers a restart.
+- To look inside one from your computer with a GUI, `fawwk db tunnel shop` prints an `ssh -L` command
+  to run there and the URL to give the client (`--reveal` shows the password, `--port` picks the local
+  port, by default one above the usual: 5433, 6380, 27018). Nothing opens on the server; the tunnel lasts
+  until you press Ctrl+C in that window. The database's address changes when it restarts, so run
+  `tunnel` again then.
 - Versions: Postgres 17, Redis 7 and MongoDB 7.0 by default; pick another with `--version 16`.
 - MongoDB 8 builds refuse to start on Linux kernel 6.19 and newer (MongoDB issue SERVER-121912), so
   MongoDB defaults to 7.0. If you pick an 8.x version, Fawwk checks it against the kernel before

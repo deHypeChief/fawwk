@@ -912,6 +912,33 @@ test_db_urls_links_and_retention() {
   has "$(cat "$SYSTEMD_DIR/fawwk-db-backup.service")" "$ROOT/bin/fawwk db backup --all --scheduled"
 }
 
+test_db_tunnel() {
+  load_fawwk
+  add_db docs mongodb; add_db shop-db postgres
+  local running=true out
+  # shellcheck disable=SC2329
+  docker() {
+    case "$*" in
+      "inspect -f {{.State.Status}} "*) [[ $running == true ]] && echo running || echo exited ;;
+      "inspect -f {{with index .NetworkSettings.Networks"*) echo 172.18.0.5 ;;
+    esac
+  }
+  # shellcheck disable=SC2329
+  server_ip() { echo 203.0.113.7; }
+  out=$(SUDO_USER=deploy db_tunnel docs 2>&1)
+  has "$out" 'ssh -N -L 27018:172.18.0.5:27017 deploy@203.0.113.7'
+  has "$out" 'mongodb://docs:****@localhost:27018/docs?authSource=admin&directConnection=true'
+  hasnt "$out" pw123; has "$out" 'Ctrl+C'; has "$out" Compass
+  out=$(db_tunnel shop-db --port 6543 --reveal 2>&1)
+  has "$out" 'ssh -N -L 6543:172.18.0.5:5432 <you>@203.0.113.7'   # run as root: no user to suggest
+  has "$out" 'postgresql://shop_db:pw123@localhost:6543/shop_db'
+  hasnt "$out" directConnection
+  out=$( (db_tunnel docs --port 99999) 2>&1) && return 1; has "$out" '--port must be a port number'
+  running=false
+  out=$( (db_tunnel docs) 2>&1) && return 1; has "$out" "docs isn't running"
+  unset -f docker server_ip
+}
+
 test_db_create_validation() {
   load_fawwk
   add_db taken postgres
@@ -955,6 +982,11 @@ test_db_real_docker() {
   db_restore_cmd "pg$sfx" latest --yes 2>/dev/null
   eq "$(pg 'select v from t')" kept
   eq "$(pg "select count(*) from information_schema.tables where table_name = 'later'")" 0
+  # The address `db tunnel` forwards to is reachable from the server itself.
+  local ip; ip=$(db_ip)
+  [[ -n $ip ]]
+  timeout 5 bash -c "exec 3<>/dev/tcp/$ip/5432"
+  has "$(server_ip() { echo 203.0.113.7; }; db_tunnel "pg$sfx" 2>&1)" "$ip:5432"
 
   db_create "rd$sfx" --type redis
   db_load "rd$sfx"; pw+=("$D_PASSWORD")
