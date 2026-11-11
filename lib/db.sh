@@ -599,8 +599,8 @@ db_tunnel() {
   [[ $(db_state) == running ]] || die "$D_NAME isn't running. Start it: fawwk db start $D_NAME"
   ip=$(db_ip)
   [[ -n $ip ]] || die "Couldn't find $D_NAME's address on the $FAWWK_NETWORK network. Try: fawwk db restart $D_NAME"
-  host=$(server_ip) user=${SUDO_USER:-root}
-  [[ $user == root ]] && user='<you>'
+  # Who you SSH in as: the sudo user, or the login of this terminal (root when you log in as root).
+  host=$(server_ip) user=${SUDO_USER:-$(logname 2>/dev/null || id -un)}
   if ((reveal)); then url=$(db_url localhost "$port"); else url=$(db_url_masked localhost "$port"); fi
   [[ $D_TYPE == mongodb ]] && url+='&directConnection=true'
   case $D_TYPE in postgres) client='TablePlus, DBeaver, pgAdmin or psql' ;; redis) client='RedisInsight or redis-cli' ;;

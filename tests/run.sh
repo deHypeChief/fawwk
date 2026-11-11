@@ -929,14 +929,16 @@ test_db_tunnel() {
   has "$out" 'ssh -N -L 27018:172.18.0.5:27017 deploy@203.0.113.7'
   has "$out" 'mongodb://docs:****@localhost:27018/docs?authSource=admin&directConnection=true'
   hasnt "$out" pw123; has "$out" 'Ctrl+C'; has "$out" Compass
-  out=$(db_tunnel shop-db --port 6543 --reveal 2>&1)
-  has "$out" 'ssh -N -L 6543:172.18.0.5:5432 <you>@203.0.113.7'   # run as root: no user to suggest
+  # shellcheck disable=SC2329
+  logname() { echo root; }   # logged in as root, no sudo
+  out=$(unset SUDO_USER; db_tunnel shop-db --port 6543 --reveal 2>&1)
+  has "$out" 'ssh -N -L 6543:172.18.0.5:5432 root@203.0.113.7'
   has "$out" 'postgresql://shop_db:pw123@localhost:6543/shop_db'
   hasnt "$out" directConnection
   out=$( (db_tunnel docs --port 99999) 2>&1) && return 1; has "$out" '--port must be a port number'
   running=false
   out=$( (db_tunnel docs) 2>&1) && return 1; has "$out" "docs isn't running"
-  unset -f docker server_ip
+  unset -f docker server_ip logname
 }
 
 test_db_create_validation() {

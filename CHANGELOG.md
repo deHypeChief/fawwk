@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0
+
+### Upgrading
+
+```bash
+sudo fawwk update
+```
+
+### New
+
+- **Open a database from your computer:** `fawwk db tunnel <name>` prints the `ssh -L` command to run
+  on your computer and the URL to give MongoDB Compass, TablePlus, DBeaver or RedisInsight (password
+  masked unless `--reveal`, local port with `--port`). Nothing opens on the server, and the tunnel
+  closes when you press Ctrl+C in its window.
+- **DNS check that sees through Cloudflare:** the check now fetches a per-server token through each
+  domain, the way a visitor would, so it can tell a domain proxied by Cloudflare that reaches this server
+  from one sent to another server. It also names Flexible SSL redirect loops and Cloudflare's 521-526
+  errors. This replaces the old "fine if it's behind a proxy" warning.
+- **Readable proxy logs:** `fawwk proxy logs` shows Caddy's log like `fawwk logs`: local times, level
+  badges, certificate events in plain words, and errors with their reason. `--raw` shows every line as
+  Caddy writes it, and `-n N` and `--no-follow` work as in `fawwk logs`.
+- `fawwk github list` shows each installation's repos in aligned columns, with a count.
+
+### Changed
+
+- Logs of failed builds, crashes, releases, database starts and restores, uploads and updates are
+  coloured: errors in red, warnings in yellow, and repeated blocks shown once with a count.
+- A crash loop now says "keeps crashing (restarted N times)".
+- `fawwk db link` asks before replacing a value the app already has. It also points out look-alike
+  variables (`MONGODB_URI` next to `MONGODB_URL`) and gives the `--as` command for them.
+
 ## 0.5.0
 
 ### Upgrading
